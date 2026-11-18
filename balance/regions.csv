@@ -1,0 +1,13 @@
+Region,Name,Owner,Slots,Terrain
+1,Capital Basin,You,8,Plains
+2,Rustfield,Kharn Clans,4,Plains
+3,Ironridge,Kharn Clans,5,Forest
+4,Highmoor,Kharn Clans,3,Hills
+5,Saltflats,Veyra Compact,6,Coast
+6,Coldwater,Veyra Compact,4,Tundra
+7,Spirepeaks,Veyra Compact,5,Mountains
+8,Greenreach,Ostrel Dominion,7,Plains
+9,Stonegate,Ostrel Dominion,4,Hills
+10,Deepwood,Ostrel Dominion,6,Forest
+11,Frostmarch,Ostrel Dominion,5,Tundra
+12,Ostrel Citadel,Ostrel Dominion,8,Mountains

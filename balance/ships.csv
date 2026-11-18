@@ -1,0 +1,4 @@
+Ship,Troop capacity,Crew to fly (marines),Speed (AU/hr),Boarding mod,Hull defense,Metal,Fuel,Gold,Build hrs (station L1),Fuel/hr active,Fuel/hr docked,Fuel per AU travelled,Repair metal if captured
+Colony ship,150,10,1,1,1,12000,3000,0,1.5,40,10,100,3000
+Battleship,60,10,1.25,1.2,1.3,20000,5000,500,2,60,15,150,5000
+Exploration ship,0,5,2,1,0.8,3000,1000,0,0.5,15,3.75,25,750

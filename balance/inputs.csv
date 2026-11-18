@@ -1,0 +1,75 @@
+Parameter,Value,Notes,Key (used by code)
+Defender advantage (multiplier),1.5,Defenders count this much more on their own ground,def_advantage
+Attack margin used for planning,1.25,Attack power ÷ defense power the timeline plans for,attack_margin
+First enemy region garrison,12,,garrison_first
+Garrison growth per region,1.37,,garrison_growth
+Starting soldiers,20,,starting_soldiers
+Output growth per building level,1.3,,level_output_growth
+New building cost: metal,100,,new_building_metal
+New building cost: fuel,10,,new_building_fuel
+Upgrade base cost: metal,30,,upgrade_metal
+Upgrade base cost: fuel,9,,upgrade_fuel
+Upgrade base cost: gold,3.5,,upgrade_gold
+Upgrade cost growth per level,1.4,,upgrade_cost_growth
+Food eaten per citizen produced,0.5,,food_per_citizen
+Food per ration,2,,food_per_ration
+Metal per equipment,1,,metal_per_equipment
+Fuel per equipment,1,,fuel_per_equipment
+"Factory fuel draw (per factory per hr, level 1)",24,,factory_fuel_draw
+Share of spare food sold for gold,40%,,food_sell_share
+Battle time constant k (min),0.126,,battle_k
+Battle time exponent p,0.87,,battle_p
+Annexation gold per defender,0.75,,annex_gold_per_defender
+Relations time per annexed region at reference size (hrs),0.5,,relations_hours_ref
+Food shortage combat penalty,25%,,food_shortage_penalty
+Fortification bonus per level,10%,,fort_bonus_per_level
+Base warning time (min per region of distance),3,,warning_minutes_per_region
+Warning fleet-size exponent,0.3,,warning_fleet_exponent
+Stealth perk: share of warning removed,75%,,stealth_warning_cut
+Sensor level: share of stealth undone per level,25%,,sensor_stealth_undo
+Max combat modifiers per side,3,,max_combat_modifiers
+Share of battle survivors left to garrison a captured region,30%,,garrison_left_share
+Share of annexed garrison that joins your army,100%,,annexed_garrison_join
+Market fee on sales,10%,,market_fee
+Trade rights: market fee cut per active partner,5%,,trade_fee_cut_per_partner
+Trade rights: signing fee (gold),0,Free by design,trade_signing_fee
+Trade rights: cut to annexation relations time,50%,,trade_relations_cut
+Relations reference size (civilization's total garrison),100,,relations_ref_size
+Relations size exponent,0.55,,relations_size_exp
+Occupy: share of captured buildings that don't fit your plan,50%,,occupy_rebuild_share
+Raze: metal salvaged per slot,80,,raze_metal_per_slot
+Raze: fuel salvaged per slot,20,,raze_fuel_per_slot
+Raze: citizen and gold output lost for the next step,20%,,raze_output_penalty
+Raze: relations damage per razed region,10%,,raze_relations_damage
+Space: docked ships' share of upkeep,25%,,docked_upkeep_share
+Space: fleet command cap at station level 1,6,,cmd_cap_base
+Space: command cap added per station level,3,,cmd_cap_per_level
+Space: ships over the cap,Not allowed,,overcap_rule
+"Space: capture rate, base",20%,,capture_base
+Space: capture rate added per winner's surviving share,60%,,capture_per_survival
+Space: soldier effectiveness in boarding,50%,,soldier_boarding_eff
+Space: marine effectiveness region-to-region on the ground,75%,,marine_ground_eff
+"Space: marine conversion, equipment per marine",2,,marine_equipment
+"Space: marine conversion, gold per marine",5,,marine_gold
+Space: defender-advantage cut per battleship in orbit,10%,,orbit_cut_per_battleship
+Space: max orbital cut,80%,,orbit_cut_max
+Space: ship build time cut per station level,15%,,build_cut_per_station_level
+Space: orbital garrison as share of planet garrison,20%,,orbital_garrison_share
+"Space: captured hull repair, share of build metal",25%,,repair_metal_share
+Space: captured hull repair time (hrs),4,,repair_hours
+Space: marine effectiveness when landing,120%,,marine_landing_eff
+Space: soldier effectiveness when landing,70%,,soldier_landing_eff
+Routing exponent,0.25,,routing_exp
+Shortest a routed battle can get (share of normal time),50%,,routing_floor
+Space: command cap is a hard limit,Yes,,cmd_cap_hard
+Space: station upgrade metal (level 1 → 2),40000,,station_upgrade_metal
+Space: station upgrade fuel (level 1 → 2),10000,,station_upgrade_fuel
+Space: station upgrade cost growth per level,1.6,,station_upgrade_growth
+Space: station upgrade build time per level (hrs),3,,station_upgrade_hours
+System: build slots outside the home planet,220,,system_slots
+System: population budget (slots × habitability),150,,system_population
+System: total NPC garrison,6500,,system_npc_garrison
+System: bonus points on small bodies,6,,system_bonus_points
+System: rival homeworld garrison growth per hr,0.20%,,rival_growth_per_hr
+System: average building levels gained per region taken,0.05,,level_gain_per_region
+System: target completion window (days),7–10,,system_target_days

@@ -1,0 +1,9 @@
+Building,Output at level 1 (per hr),Produces,Uses,Key (used by code)
+Home,80,citizens,Citizens eat food,home
+Farm,400,food,,farm
+Mine,560,metal,,mine
+Fuel extractor,240,fuel,,fuel_extractor
+Factory: rations,120,rations,"2 food each, plus fuel power",factory_rations
+Factory: equipment,80,equipment,"1 metal + 1 fuel each, plus fuel power",factory_equipment
+Barracks,120,soldiers (max trained),1 citizen + 1 equipment + 1 ration per soldier,barracks
+Station,0,storage cap + routes,Built when the home planet is won,station

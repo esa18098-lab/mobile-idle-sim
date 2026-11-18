@@ -1,0 +1,18 @@
+# Godot
+.godot/
+*.translation
+/android/
+/build/
+*.apk
+*.aab
+*.tmp
+
+# Signing keys: never commit
+*.keystore
+*.jks
+export_credentials.cfg
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/

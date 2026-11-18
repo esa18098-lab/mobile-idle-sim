@@ -1,0 +1,31 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+
+config_version=5
+
+[application]
+
+config/name="Mobile Idle Sim"
+config/description="Idle sim: one planet, then the solar system, then the galaxy."
+run/main_scene="res://scenes/main.tscn"
+config/features=PackedStringArray("4.7", "Mobile")
+
+[autoload]
+
+Balance="*res://scripts/autoload/balance.gd"
+
+[display]
+
+window/size/viewport_width=360
+window/size/viewport_height=640
+window/size/window_width_override=720
+window/size/window_height_override=1280
+window/stretch/mode="viewport"
+window/stretch/scale_mode="integer"
+window/handheld/orientation=1
+
+[rendering]
+
+renderer/rendering_method="mobile"
+textures/canvas_textures/default_texture_filter=0

@@ -1,0 +1,6 @@
+Resource,Base price,NPC supply/hr,NPC demand/hr,Player sells/hr,Sensitivity
+Metal,1,2000,2000,0,0.8
+Fuel,1.5,1200,1300,0,0.8
+Food,0.5,4000,3800,1000,0.8
+Rations,1.4,800,900,0,0.8
+Equipment,3,500,550,0,0.8
