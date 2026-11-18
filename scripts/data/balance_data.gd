@@ -11,8 +11,11 @@ const KEY_COLUMN := "Key (used by code)"
 ## Every CSV the game reads. File name = sheet tab, lower_snake_case.
 const TABLES: PackedStringArray = [
 	"inputs", "buildings", "terrain", "planet_types", "regions",
-	"civilizations", "build_plan", "ships", "market",
+	"civilizations", "build_plan", "ships", "market", "market_settings",
 ]
+
+## Tables of keyed parameters (Value + Key columns). All land in `inputs`.
+const PARAMETER_TABLES: PackedStringArray = ["inputs", "market_settings"]
 
 ## Keys the code relies on. Loading fails loudly if the sheet drops one.
 const REQUIRED_INPUT_KEYS: PackedStringArray = [
@@ -40,6 +43,7 @@ const REQUIRED_INPUT_KEYS: PackedStringArray = [
 	"station_upgrade_hours", "system_slots", "system_population",
 	"system_npc_garrison", "system_bonus_points", "rival_growth_per_hr",
 	"level_gain_per_region", "system_target_days",
+	"market_price_floor", "market_price_ceiling", "market_recovery_per_hr",
 ]
 
 const REQUIRED_BUILDING_KEYS: PackedStringArray = [
@@ -70,13 +74,14 @@ func load_dir(dir: String = DEFAULT_DIR) -> bool:
 			continue
 		tables[table_name] = read_csv(path)
 
-	for row in tables["inputs"]:
-		var key: String = row.get(KEY_COLUMN, "").strip_edges()
-		if key.is_empty():
-			continue
-		if inputs.has(key):
-			errors.append("Duplicate input key: %s" % key)
-		inputs[key] = row.get("Value", "")
+	for table_name in PARAMETER_TABLES:
+		for row in tables[table_name]:
+			var key: String = row.get(KEY_COLUMN, "").strip_edges()
+			if key.is_empty():
+				continue
+			if inputs.has(key):
+				errors.append("Duplicate parameter key: %s" % key)
+			inputs[key] = row.get("Value", "")
 
 	for row in tables["buildings"]:
 		var key: String = row.get(KEY_COLUMN, "").strip_edges()
@@ -85,7 +90,7 @@ func load_dir(dir: String = DEFAULT_DIR) -> bool:
 
 	for key in REQUIRED_INPUT_KEYS:
 		if not inputs.has(key):
-			errors.append("Inputs tab is missing key: %s" % key)
+			errors.append("Balance is missing parameter key: %s" % key)
 	for key in REQUIRED_BUILDING_KEYS:
 		if not buildings.has(key):
 			errors.append("Buildings tab is missing key: %s" % key)

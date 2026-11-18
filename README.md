@@ -11,14 +11,23 @@
 | Milestone | State |
 |---|---|
 | 1. Setup, repo, CSV pipeline, Android preset | Done in code. You still need to install it on a phone once (steps below). |
-| 2. Headless sim core matching the Timeline tab within 5% | Next. Combat already matches the sheet exactly. |
+| 2. Headless sim core matching the Timeline tab within 5% | Done. A cautious playthrough takes 5.08 h vs the sheet's 5.106 h, and every step is within 5%. An attentive player takes 3.92 h. |
+| 3+. Save/load, offline catch-up, the planet map UI | Next. See the build plan. |
+
+### What the two playthroughs mean
+
+- **Cautious** plays the way the Timeline assumes: build, train, attack, wait for the battle, repeat. It is the check that the sim follows the sheet's rules.
+- **Attentive** trains for the next region while the current battle runs. Battles are about half of the sheet's time, so this is 23% faster. The sheet's timing is therefore the slow, cautious path, not the typical one.
 
 ## Layout
 
 ```
 balance/        CSVs exported from the sheet (one per tab). The game reads these and nothing else for numbers.
 scripts/data/   balance_data.gd: loads the CSVs and looks values up by key.
-scripts/sim/    The sim core. Pure GDScript, no scenes, no clock of its own. combat.gd so far.
+scripts/sim/    The sim core. Pure GDScript, no scenes, no clock of its own.
+                  sim.gd: home-planet state, commands, 1-second ticks. combat.gd: battle math.
+                  autoplayer.gd: plays the default path for tests (cautious or attentive).
+tools/          playthrough.gd: prints a region-by-region playthrough next to the sheet.
 scripts/autoload/  Balance: the one loaded copy of the balance data.
 scripts/ui/     Presentation. It reads the sim and sends it commands; it holds no game rules.
 scenes/         main.tscn: a build-check screen for now.
@@ -38,6 +47,12 @@ tests/          Headless tests and golden numbers copied from the sheet.
 3. Run the tests. Commit.
 
 You can also edit a CSV directly to try something on the device, then copy the change back to the sheet. The sheet stays the source of truth.
+
+## Running a playthrough
+
+```
+godot --headless --path . --script res://tools/playthrough.gd
+```
 
 ## Running tests
 

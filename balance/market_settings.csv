@@ -1,0 +1,4 @@
+Parameter,Value,Notes,Key (used by code)
+Price floor (× base),0.4,,market_price_floor
+Price ceiling (× base),2.5,,market_price_ceiling
+Recovery toward base per hour,10%,Applied each game tick; this sheet shows the settled price,market_recovery_per_hr

@@ -8,6 +8,8 @@ extends SceneTree
 
 const BalanceData := preload("res://scripts/data/balance_data.gd")
 const Combat := preload("res://scripts/sim/combat.gd")
+const Sim := preload("res://scripts/sim/sim.gd")
+const AutoPlayer := preload("res://scripts/sim/autoplayer.gd")
 const GOLDEN_TOLERANCE := 0.05
 
 var _passed := 0
@@ -25,6 +27,9 @@ func _initialize() -> void:
 	_finished("test_combat_tab", test_combat_tab(b))
 	_finished("test_timeline_golden", test_timeline_golden(b))
 	_finished("test_csv_change_changes_game", test_csv_change_changes_game())
+	_finished("test_economy_rates", test_economy_rates(b))
+	_finished("test_strict_playthrough_matches_sheet", test_strict_playthrough_matches_sheet(b))
+	_finished("test_eager_playthrough", test_eager_playthrough(b))
 
 	print("\n%d passed, %d failed, %d skipped" % [_passed, _failed, _skipped])
 	quit(1 if _failed > 0 else 0)
@@ -71,8 +76,6 @@ func test_timeline_golden(b) -> bool:
 		var r := Combat.resolve(need, garrison, mod, b)
 		_check_close(label + " battle minutes", r.minutes, float(g["battle_min"]), GOLDEN_TOLERANCE)
 
-	# Cumulative hours need the economy sim (milestone 2).
-	_skip("timeline cumulative hours (5.106 h) — economy sim is milestone 2")
 	return true
 
 
@@ -93,6 +96,62 @@ func test_csv_change_changes_game() -> bool:
 	var need := Combat.soldiers_needed(Combat.region_garrison(2, b), 1.0, b)
 	_check("csv edit: Rustfield now needs 30 soldiers (was 23)", need == 30, "got %d" % need)
 	return true
+
+
+## Production at the first build-plan row (all level 1) against the Timeline's row 12.
+func test_economy_rates(b) -> bool:
+	var sim = Sim.new_home_planet(b)
+	var r: Dictionary = sim.rates()
+	_check_close("rates: citizens/hr", r.citizens, 80.0)
+	_check_close("rates: food after upkeep/hr", r.food - r.citizens * b.num("food_per_citizen"), 360.0)
+	_check_close("rates: metal/hr", r.metal, 1120.0)
+	_check_close("rates: fuel after factory power/hr", r.fuel - r.rations_power - r.equipment_power, 192.0)
+	_check_close("rates: barracks cap/hr", r.barracks_cap, 120.0)
+	# Market tab: food sells at 0.4014 when the player sells 1000/hr.
+	_check_close("market: food price at 1000/hr", sim.food_price(1000.0), 0.40144021647363637, 1e-6)
+	# Level 2 buildings make output_growth times more.
+	for bd in sim.buildings:
+		bd.level = 2
+	sim._rates_dirty = true
+	_check_close("rates: metal at level 2", sim.rates().metal, 1120.0 * b.num("level_output_growth"))
+	return true
+
+
+## Played the way the Timeline assumes (one step at a time, nothing trained
+## during battles), the sim must land within 5% of the sheet at every step.
+func test_strict_playthrough_matches_sheet(b) -> bool:
+	var golden := {}
+	for g in BalanceData.read_csv("res://tests/golden/timeline_default.csv"):
+		golden[int(g["region"])] = float(g["cumulative_hrs"])
+	var sim = Sim.new_home_planet(b)
+	var ap = AutoPlayer.new(sim, AutoPlayer.Mode.STRICT)
+	var total: float = ap.play()
+	_check("strict: all 11 regions taken", ap.steps.size() == 11 and sim.owns(12))
+	for s in ap.steps:
+		_check_close("strict: region %d done by sheet time" % s.region, s.ended, golden[s.region], GOLDEN_TOLERANCE)
+	_check_close("strict: home planet total vs sheet 5.106 h", total, golden[12], GOLDEN_TOLERANCE)
+	_check_no_negative(sim, "strict")
+	var again = Sim.new_home_planet(b)
+	_check("strict: deterministic (same result twice)", is_equal_approx(AutoPlayer.new(again, AutoPlayer.Mode.STRICT).play(), total))
+	return true
+
+
+## An attentive player trains during battles. Pinned so balance changes show up.
+func test_eager_playthrough(b) -> bool:
+	var pin := float(BalanceData.read_csv("res://tests/golden/sim_playthrough.csv")[0]["total_hrs"])
+	var sim = Sim.new_home_planet(b)
+	var total: float = AutoPlayer.new(sim, AutoPlayer.Mode.EAGER).play()
+	_check_close("eager: total matches pinned %.3f h" % pin, total, pin, 0.01)
+	_check("eager: under the 6 h home-planet cap", total <= 6.0, "got %.2f" % total)
+	_check_no_negative(sim, "eager")
+	return true
+
+
+func _check_no_negative(sim, label: String) -> void:
+	var worst := 0.0
+	for k in sim.res:
+		worst = minf(worst, sim.res[k])
+	_check(label + ": no resource below zero", worst > -1e-6, "min %f" % worst)
 
 
 # --- tiny assert helpers -------------------------------------------------------

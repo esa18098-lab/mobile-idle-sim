@@ -3,6 +3,8 @@ extends Control
 ## Shows a few live balance values and a sample battle. "Reload" re-reads the CSVs.
 
 const Combat := preload("res://scripts/sim/combat.gd")
+const Sim := preload("res://scripts/sim/sim.gd")
+const AutoPlayer := preload("res://scripts/sim/autoplayer.gd")
 
 var _out: Label
 
@@ -33,6 +35,12 @@ func _ready() -> void:
 	reload.pressed.connect(func(): Balance.reload())
 	box.add_child(reload)
 
+	var run := Button.new()
+	run.text = "Simulate home planet"
+	run.custom_minimum_size = Vector2(0, 48)
+	run.pressed.connect(_simulate)
+	box.add_child(run)
+
 	Balance.reloaded.connect(_refresh)
 	_refresh()
 
@@ -60,4 +68,15 @@ func _refresh() -> void:
 	lines.append("Sample: 500 vs 200 in forest -> %s, %d survivors, %.1f min" % [
 		"attacker wins" if demo.attacker_wins else "defender holds",
 		roundi(demo.survivors), demo.minutes])
+	_out.text = "\n".join(lines)
+
+
+func _simulate() -> void:
+	var lines: PackedStringArray = [_out.text, ""]
+	for mode in [AutoPlayer.Mode.STRICT, AutoPlayer.Mode.EAGER]:
+		var t0 := Time.get_ticks_msec()
+		var sim = Sim.new_home_planet(Balance.data)
+		var hrs: float = AutoPlayer.new(sim, mode).play()
+		lines.append("%s player: home planet in %.2f h  (%d ms)" % [
+			"Cautious" if mode == AutoPlayer.Mode.STRICT else "Attentive", hrs, Time.get_ticks_msec() - t0])
 	_out.text = "\n".join(lines)
