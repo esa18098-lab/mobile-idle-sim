@@ -11,14 +11,27 @@
 | Milestone | State |
 |---|---|
 | 1. Setup, repo, CSV pipeline, Android preset | Done in code. You still need to install it on a phone once (steps below). |
-| 2. Headless sim core matching the Timeline tab within 5% | Done. A cautious playthrough takes 5.08 h vs the sheet's 5.106 h, and every step is within 5%. An attentive player takes 3.92 h. |
+| 2. Headless sim core matching the Timeline tab within 5% | Done. A cautious playthrough takes 5.08 h vs the sheet's 5.106 h, and every step is within 5%. An attentive player takes 3.84 h. |
 | 3. Region map and building slots | Done. Planet and region views, build, upgrade, demolish, the queue, and the resource bar. Tests check that every building type can be placed through the buttons and that the screen's rates equal the sim's. |
-| 4. Combat and conquest | Next. |
+| 4. Combat and conquest | Done. Borders from the map grid, the attack screen with a live outcome preview, occupy or raze, timed battles, survivors coming home, the Army screen's standing training order, and capture pop-ups. Tests take the whole planet by force (3.83 h attentive). |
+| 5. NPC behaviour | Next. |
 
 ### What the two playthroughs mean
 
 - **Cautious** plays the way the Timeline assumes: build, train, attack, wait for the battle, repeat. It is the check that the sim follows the sheet's rules.
-- **Attentive** trains for the next region while the current battle runs. Battles are about half of the sheet's time, so this is 23% faster. The sheet's timing is therefore the slow, cautious path, not the typical one.
+- **Attentive** trains for the next region, or opens annexation talks, while the current battle runs. Battles are about half of the sheet's time, so this is about 25% faster. The sheet's timing is therefore the slow, cautious path, not the typical one.
+
+### Paths through the home planet (`tools/paths.gd`)
+
+| Path | Cautious | Attentive |
+|---|---|---|
+| Default: conquer Kharn and Ostrel, annex Veyra | 5.08 h | 3.84 h |
+| Conquer everyone | 5.23 h | 3.83 h |
+| Conquer everyone, raze Kharn | 5.15 h | 3.69 h |
+| Annex Veyra, raze Kharn | 5.18 h | 3.99 h |
+| Conquer everyone, raze all | 5.16 h | 3.78 h |
+
+All paths are within about 8% of each other. Razing is a little faster but slows annexation for the rest of the planet.
 
 ## Layout
 
@@ -32,7 +45,9 @@ scripts/game/   game.gd (autoload Game): the only code that reads the clock. Fee
 scripts/ui/     main_screen.gd (resource bar, views, queue, sheets), planet_view.gd, region_view.gd,
                   look.gd (placeholder colours, labels, theme), icon.gd (placeholder 16×16 icons).
 assets/fonts/   Silkscreen (SIL OFL), an 8 px pixel font: use sizes 8 or 16 only.
+data/maps/      home_planet.csv: where each region sits on the map grid. Regions that sit side by side share a border.
 tools/          playthrough.gd: prints a region-by-region playthrough next to the sheet.
+                paths.gd: compares the paths through the home planet.
                 shots.gd: renders every screen to PNGs (needs a display; xvfb-run on a server).
 scripts/autoload/  Balance: the one loaded copy of the balance data.
 scripts/ui/     Presentation. It reads the sim and sends it commands; it holds no game rules.

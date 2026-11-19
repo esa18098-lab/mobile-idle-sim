@@ -29,6 +29,11 @@ var battles: Array = []       ## {region, soldiers, ends_at}
 var annexes: Array = []       ## {region, ends_at, paid}
 var events: Array = []        ## log of what happened: {hours, text}
 var next_id := 1              ## buildings get stable ids: indexes shift on demolish
+var razed_count := 0          ## regions razed so far (slows every later annexation)
+var raze_penalty := false     ## citizens and gold down until your next capture
+var map_pos := {}             ## region -> Vector2i on the map grid; borders come from it
+
+const MAP_PATH := "res://data/maps/home_planet.csv"
 
 # --- derived, cached ---------------------------------------------------------
 var _rates_dirty := true
@@ -50,6 +55,7 @@ func _setup(data: BalanceData) -> void:
 		_type_by_name[b.buildings[key]["Building"]] = key
 	_load_civs()
 	_load_regions()
+	_load_map()
 	soldiers = b.num("starting_soldiers")
 	# The capital starts built out with the first build-plan row, all at level 1.
 	var first_plan := plan_for_region(2)
@@ -94,9 +100,64 @@ func _load_regions() -> void:
 		})
 
 
+func _load_map() -> void:
+	for row in BalanceData.read_csv(MAP_PATH):
+		map_pos[int(row["Region"])] = Vector2i(int(row["Column"]), int(row["Row"]))
+
+
 # =============================================================================
 # Queries
 # =============================================================================
+
+## Regions share a border when they sit side by side on the map grid.
+func borders(a: int, b_idx: int) -> bool:
+	var d: Vector2i = map_pos[a] - map_pos[b_idx]
+	return absi(d.x) + absi(d.y) == 1
+
+
+func neighbours(idx: int) -> Array:
+	var out: Array = []
+	for other in map_pos:
+		if other != idx and borders(idx, other):
+			out.append(other)
+	return out
+
+
+## Why the player can't attack a region right now, or "" if they can.
+func attack_blocker(region_idx: int, count: int) -> String:
+	if owns(region_idx):
+		return "Already yours"
+	if battle_at(region_idx).size() > 0:
+		return "Battle under way"
+	if not neighbours(region_idx).any(func(n): return owns(n)):
+		return "Not on your border"
+	if count <= 0:
+		return "Send at least one soldier"
+	if count > soldiers + 1e-6:
+		return "Only %d soldiers at home" % floori(soldiers + 1e-6)
+	return ""
+
+
+func annexing(region_idx: int) -> bool:
+	return annexes.any(func(a): return a.region == region_idx)
+
+
+func battle_at(region_idx: int) -> Dictionary:
+	for battle in battles:
+		if battle.region == region_idx:
+			return battle
+	return {}
+
+
+## The outcome a battle would have if it started now (for the attack screen).
+func preview_attack(region_idx: int, count: int) -> Dictionary:
+	var reg := region(region_idx)
+	var r := Combat.resolve(count, reg.garrison, reg.defense_mod, b)
+	r.needed = Combat.soldiers_needed(reg.garrison, reg.defense_mod, b)
+	r.salvage = {"metal": reg.slots * b.num("raze_metal_per_slot"), "fuel": reg.slots * b.num("raze_fuel_per_slot")}
+	r.kept = floori(reg.slots * (1.0 - b.num("occupy_rebuild_share")))
+	r.stay = r.survivors * b.num("garrison_left_share") if r.attacker_wins else 0.0
+	return r
 
 func region(idx: int) -> Dictionary:
 	return regions[idx - 1]
@@ -208,19 +269,26 @@ func rates() -> Dictionary:
 	return r
 
 
+## Citizens and gold after a razing: down until your next capture.
+func raze_output_mult() -> float:
+	return 1.0 - b.num("raze_output_penalty") if raze_penalty else 1.0
+
+
 ## Per-hour rates for the resource bar. Raw resources are what flows into the
 ## stockpile; rations, equipment and soldiers are capacity (they need inputs).
 func display_rates() -> Dictionary:
 	var r := rates()
-	var food_net: float = r.food - r.citizens * b.num("food_per_citizen")
+	var penalty := raze_output_mult()
+	var citizens: float = r.citizens * penalty
+	var food_net: float = r.food - citizens * b.num("food_per_citizen")
 	var sold := maxf(0.0, food_net) * b.num("food_sell_share")
 	var fee := b.num("market_fee") - b.num("trade_fee_cut_per_partner") * active_trade_partners()
 	return {
-		"citizens": r.citizens,
+		"citizens": citizens,
 		"food": food_net - sold if food_net > 0.0 else food_net,
 		"metal": r.metal,
 		"fuel": r.fuel,
-		"gold": sold * food_price(sold) * (1.0 - fee),
+		"gold": sold * food_price(sold) * (1.0 - fee) * penalty,
 		"rations": r.rations_cap,
 		"equipment": r.equipment_cap,
 		"soldiers": r.barracks_cap,
@@ -270,7 +338,7 @@ func relations_hours(region_idx: int) -> float:
 	var t := b.num("relations_hours_ref") * pow(civ_size(civ_name) / b.num("relations_ref_size"), b.num("relations_size_exp"))
 	if c.trade:
 		t *= 1.0 - b.num("trade_relations_cut")
-	return t
+	return t * (1.0 + b.num("raze_relations_damage") * razed_count)
 
 
 func annex_gold(region_idx: int) -> float:
@@ -385,20 +453,23 @@ func set_train_target(n: float) -> void:
 	train_target = n
 
 
-func attack(region_idx: int, count: int) -> bool:
-	if owns(region_idx) or count > soldiers or count <= 0:
+## Send soldiers at an enemy region on your border. `on_capture` is "Occupy" or
+## "Raze", chosen up front so a battle that ends while you're away still resolves.
+func attack(region_idx: int, count: int, on_capture: String = "Occupy") -> bool:
+	if attack_blocker(region_idx, count) != "" or not (on_capture in ["Occupy", "Raze"]):
 		return false
 	var reg := region(region_idx)
 	var dfn := Combat.defense_power(reg.garrison, reg.defense_mod, b)
 	var minutes := Combat.battle_minutes(count, reg.garrison, count, dfn, b)
 	soldiers -= count
-	battles.append({"region": region_idx, "soldiers": float(count), "ends_at": hours + minutes / 60.0})
+	battles.append({"region": region_idx, "soldiers": float(count), "started_at": hours,
+		"ends_at": hours + minutes / 60.0, "on_capture": on_capture})
 	_log("Attack %s with %d (battle %.2f min)" % [reg.name, count, minutes])
 	return true
 
 
 func start_annex(region_idx: int) -> bool:
-	if owns(region_idx) or civs[region(region_idx).civ].method != "Annex":
+	if owns(region_idx) or civs[region(region_idx).civ].method != "Annex" or annexing(region_idx):
 		return false
 	annexes.append({"region": region_idx, "ends_at": hours + relations_hours(region_idx), "paid": false})
 	queue.push_front({"kind": "annex_gold", "region": region_idx})
@@ -422,13 +493,14 @@ func _tick(dt: float) -> void:
 	var r := rates()
 
 	# Raw production. Citizens eat as they are produced.
-	var citizens_made: float = r.citizens * dt
+	var penalty := raze_output_mult()
+	var citizens_made: float = r.citizens * penalty * dt
 	res.citizens += citizens_made
 	var food_net: float = r.food * dt - citizens_made * b.num("food_per_citizen")
 	if food_net > 0.0:
 		var sold := food_net * b.num("food_sell_share")
 		var fee := b.num("market_fee") - b.num("trade_fee_cut_per_partner") * active_trade_partners()
-		res.gold += sold * food_price(sold / dt) * (1.0 - fee)
+		res.gold += sold * food_price(sold / dt) * (1.0 - fee) * penalty
 		res.food += food_net - sold
 	else:
 		res.food = maxf(0.0, res.food + food_net)
@@ -559,22 +631,27 @@ func _finish_battle(battle: Dictionary) -> void:
 	var result := Combat.resolve(battle.soldiers, reg.garrison, reg.defense_mod, b)
 	if not result.attacker_wins:
 		reg.garrison = reg.garrison * result.survivor_share
-		_log("Lost at %s; %.1f defenders left" % [reg.name, reg.garrison])
+		_log("Lost at %s: all %d attackers fell, %.0f defenders left" % [reg.name, battle.soldiers, reg.garrison], "battle_lost", battle.region)
 		return
 	var survivors: float = result.survivors
 	var left := survivors * b.num("garrison_left_share")
 	soldiers += survivors - left
-	var civ: Dictionary = civs[reg.civ]
-	var keep_share := 1.0 - b.num("occupy_rebuild_share")
-	if civ.captured != "Occupy":
-		push_error("Captured-region action '%s' not implemented yet" % civ.captured)
-		keep_share = 0.0
 	reg.owner = PLAYER
 	reg.garrison = left
-	reg.kept_credits = floori(reg.slots * keep_share)
 	reg.kept_level = maxi(1, floori(avg_level()))
+	raze_penalty = false
+	if battle.get("on_capture", "Occupy") == "Raze":
+		res.metal += reg.slots * b.num("raze_metal_per_slot")
+		res.fuel += reg.slots * b.num("raze_fuel_per_slot")
+		reg.kept_credits = 0
+		razed_count += 1
+		raze_penalty = true
+		_log("Razed %s: %.0f survivors (%.0f stay), salvaged %.0f metal and %.0f fuel" % [reg.name, survivors, left,
+			reg.slots * b.num("raze_metal_per_slot"), reg.slots * b.num("raze_fuel_per_slot")], "captured", battle.region)
+	else:
+		reg.kept_credits = floori(reg.slots * (1.0 - b.num("occupy_rebuild_share")))
+		_log("Captured %s: %.0f survivors, %.0f stay as garrison" % [reg.name, survivors, left], "captured", battle.region)
 	_rates_dirty = true
-	_log("Captured %s: %.0f survivors, %.0f stay as garrison" % [reg.name, survivors, left])
 
 
 func _finish_annex(region_idx: int) -> void:
@@ -584,8 +661,9 @@ func _finish_annex(region_idx: int) -> void:
 	reg.garrison = 0.0
 	reg.kept_credits = reg.slots
 	reg.kept_level = maxi(1, floori(avg_level()))
+	raze_penalty = false
 	_rates_dirty = true
-	_log("Annexed %s" % reg.name)
+	_log("Annexed %s" % reg.name, "annexed", region_idx)
 
 
 func _add_building(type: String, level: int, region_idx: int) -> void:
@@ -593,5 +671,5 @@ func _add_building(type: String, level: int, region_idx: int) -> void:
 	next_id += 1
 
 
-func _log(text: String) -> void:
-	events.append({"hours": hours, "text": text})
+func _log(text: String, kind: String = "info", region_idx: int = 0) -> void:
+	events.append({"hours": hours, "text": text, "kind": kind, "region": region_idx})

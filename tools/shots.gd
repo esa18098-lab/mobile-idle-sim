@@ -38,6 +38,28 @@ func _initialize() -> void:
 		["planet_later", func():
 			Game.advance_seconds(600)
 			_main.show_planet()],
+		["army", func():
+			Game.new_game()
+			_main.show_planet()
+			_main._open_sheet(_main._army_sheet)],
+		["attack", func():
+			_main.close_sheet()
+			_main.show_region(2)
+			_main.open_attack_sheet(2)],
+		["attack_raze", func():
+			_main._attack_mode = "Raze"
+			_main._attack_count = 15
+			_main._rebuild_sheet()],
+		["battle", func():
+			_main._attack_mode = "Occupy"
+			_main._attack_count = 20
+			_main._rebuild_sheet()
+			_main._sheet_box.get_node("go").pressed.emit()
+			Game.advance_seconds(70)],
+		["planet_battle", func(): _main.show_planet()],
+		["captured", func():
+			Game.advance_seconds(120)
+			_main._process(1.0)],
 	]
 
 

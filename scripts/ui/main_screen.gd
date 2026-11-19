@@ -20,6 +20,11 @@ var _sheet_box: VBoxContainer
 var _sheet_builder := Callable()  ## rebuilds the open sheet when the game changes
 var _since_refresh := 0.0
 var _demolish_armed := -1
+var _army_btn: Button
+var _toast_box: VBoxContainer
+var _seen_events := 0
+var _attack_count := 0
+var _attack_mode := "Occupy"
 
 
 func _ready() -> void:
@@ -47,6 +52,12 @@ func _ready() -> void:
 
 	col.add_child(_bottom_bar())
 	_build_sheet_layer()
+	_toast_box = VBoxContainer.new()
+	_toast_box.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE, Control.PRESET_MODE_MINSIZE, 6)
+	_toast_box.position.y = 56
+	_toast_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_toast_box)
+	_seen_events = Game.sim.events.size()
 
 	Game.changed.connect(_on_changed)
 	show_planet()
@@ -60,7 +71,10 @@ func _process(delta: float) -> void:
 	_since_refresh = 0.0
 	resource_bar.refresh()
 	_refresh_bottom()
-	if _sheet_layer.visible and _sheet_builder.is_valid() and _sheet_builder.get_method() == &"_queue_sheet":
+	_show_new_events()
+	if view and view.has_method("refresh_live"):
+		view.refresh_live()
+	if _sheet_layer.visible and _sheet_builder.is_valid() and _sheet_builder.get_method() in [&"_queue_sheet", &"_army_sheet"]:
 		_rebuild_sheet()
 
 
@@ -95,6 +109,7 @@ func show_region(idx: int) -> void:
 	rv.back_tapped.connect(show_planet)
 	rv.empty_slot_tapped.connect(open_build_sheet)
 	rv.building_tapped.connect(open_building_sheet)
+	rv.attack_tapped.connect(open_attack_sheet)
 
 
 func _set_view(v: Control) -> void:
@@ -130,6 +145,11 @@ func _bottom_bar() -> Control:
 	_queue_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	_queue_btn.pressed.connect(func(): _open_sheet(_queue_sheet))
 	row.add_child(_queue_btn)
+	_army_btn = Button.new()
+	_army_btn.name = "army"
+	_army_btn.custom_minimum_size = Vector2(76, 40)
+	_army_btn.pressed.connect(func(): _open_sheet(_army_sheet))
+	row.add_child(_army_btn)
 	_clock = Look.label("", Look.FONT_SMALL, Look.DIM)
 	_clock.custom_minimum_size = Vector2(62, 0)
 	_clock.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
@@ -149,7 +169,11 @@ func _refresh_bottom() -> void:
 	if sim.queue.is_empty():
 		_queue_btn.text = "Queue empty"
 	else:
-		_queue_btn.text = "Queue %d · %s" % [sim.queue.size(), _waiting_for(sim.queue[0])]
+		_queue_btn.text = "Queue %d\n%s" % [sim.queue.size(), _waiting_for(sim.queue[0])]
+	var away := 0.0
+	for battle in sim.battles:
+		away += battle.soldiers
+	_army_btn.text = "Army %s" % Look.num(sim.soldiers) + ("\n%s fighting" % Look.num(away) if away > 0.0 else ("\ntrain to %s" % Look.num(sim.train_target) if sim.train_target > sim.soldiers + 0.5 else ""))
 	var secs := int(sim.hours * 3600.0)
 	_clock.text = "%d:%02d:%02d\n×%s" % [secs / 3600, (secs / 60) % 60, secs % 60, Look.num(Game.speed)]
 
@@ -195,6 +219,30 @@ func _open_sheet(builder: Callable) -> void:
 	_demolish_armed = -1
 	_sheet_layer.visible = true
 	_rebuild_sheet()
+
+
+func _show_new_events() -> void:
+	var events: Array = Game.sim.events
+	if _seen_events > events.size():   # new game
+		_seen_events = 0
+	while _seen_events < events.size():
+		var e: Dictionary = events[_seen_events]
+		_seen_events += 1
+		if e.kind in ["captured", "battle_lost", "annexed"]:
+			toast(e.text, Look.BAD if e.kind == "battle_lost" else Look.ACCENT)
+
+
+func toast(text: String, color: Color = Look.ACCENT) -> void:
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel", Look.flat_box(Look.PANEL, color, 1, 6))
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var l := Look.label(text, Look.FONT_SIZE, color)
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	panel.add_child(l)
+	_toast_box.add_child(panel)
+	get_tree().create_timer(5.0).timeout.connect(func():
+		if is_instance_valid(panel):
+			panel.queue_free())
 
 
 func close_sheet() -> void:
@@ -364,6 +412,148 @@ func _queue_icon(q: Dictionary) -> Control:
 		"upgrade":
 			return Icon.for_building(Game.sim.building_by_id(q.id).type, 2)
 	return Icon.make(Look.ACCENT, "$", 2)
+
+
+# --- attack -------------------------------------------------------------------
+
+func open_attack_sheet(region_idx: int) -> void:
+	var sim = Game.sim
+	var need: int = sim.preview_attack(region_idx, 1).needed
+	_attack_count = mini(need, floori(sim.soldiers + 1e-6)) if sim.soldiers >= 1.0 else need
+	_attack_mode = "Occupy"
+	_open_sheet(_attack_sheet.bind(region_idx))
+
+
+func _attack_sheet(region_idx: int) -> void:
+	var sim = Game.sim
+	var reg: Dictionary = sim.region(region_idx)
+	_sheet_title("Attack %s" % reg.name)
+	var home := floori(sim.soldiers + 1e-6)
+	_attack_count = clampi(_attack_count, 0, maxi(home, _attack_count))
+	var p: Dictionary = sim.preview_attack(region_idx, maxi(1, _attack_count))
+
+	var steps := HBoxContainer.new()
+	steps.add_theme_constant_override("separation", 4)
+	for d in [-10, -1, 1, 10]:
+		var bt := Button.new()
+		bt.text = "%+d" % d
+		bt.custom_minimum_size = Vector2(44, 40)
+		bt.pressed.connect(func():
+			_attack_count = maxi(0, _attack_count + d)
+			_rebuild_sheet())
+		steps.add_child(bt)
+	var count_l := Look.label("  %d" % _attack_count, Look.FONT_TITLE)
+	count_l.name = "count"
+	count_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	steps.add_child(count_l)
+	_sheet_box.add_child(steps)
+
+	var quick := HBoxContainer.new()
+	quick.add_theme_constant_override("separation", 4)
+	for pair in [["Needed %d" % p.needed, p.needed], ["All %d" % home, home]]:
+		var qb := Button.new()
+		qb.text = pair[0]
+		qb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		qb.custom_minimum_size = Vector2(0, 36)
+		var n: int = pair[1]
+		qb.pressed.connect(func():
+			_attack_count = n
+			_rebuild_sheet())
+		quick.add_child(qb)
+	_sheet_box.add_child(quick)
+
+	var outcome := "WIN" if p.attacker_wins else "LOSS"
+	var lines: PackedStringArray = [
+		"Attack %s vs defense %s (×%.2f)" % [Look.num(p.attack), Look.num(p.defense), p.ratio],
+		"%s · battle %.1f min" % [outcome, p.minutes],
+	]
+	if p.attacker_wins:
+		lines.append("%s survive, %s stay as garrison" % [Look.num(p.survivors), Look.num(p.stay)])
+	else:
+		lines.append("All attackers lost; %s defenders left" % Look.num(p.survivors))
+	var pv := Look.label("\n".join(lines), Look.FONT_SIZE, Look.ACCENT if p.attacker_wins else Look.BAD)
+	pv.name = "preview"
+	_sheet_box.add_child(pv)
+
+	var modes := HBoxContainer.new()
+	modes.add_theme_constant_override("separation", 4)
+	for m in ["Occupy", "Raze"]:
+		var mb := Button.new()
+		mb.name = "mode_" + m.to_lower()
+		mb.text = m
+		mb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		mb.custom_minimum_size = Vector2(0, 36)
+		if _attack_mode == m:
+			mb.add_theme_color_override("font_color", Look.ACCENT)
+			mb.add_theme_stylebox_override("normal", Look.flat_box(Look.PANEL_HI, Look.ACCENT, 1, 6))
+		mb.pressed.connect(func():
+			_attack_mode = m
+			_rebuild_sheet())
+		modes.add_child(mb)
+	_sheet_box.add_child(modes)
+	var why := ""
+	if _attack_mode == "Occupy":
+		why = "Keep %d of %d buildings free. The rest are torn down for your plan." % [p.kept, reg.slots]
+	else:
+		why = "Salvage %s. Citizens and gold -%d%% until your next capture. Annexing gets %d%% slower." % [
+			Look.cost(p.salvage), roundi(sim.b.num("raze_output_penalty") * 100), roundi(sim.b.num("raze_relations_damage") * 100)]
+	var wl := Look.label(why, Look.FONT_SMALL, Look.DIM)
+	wl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_sheet_box.add_child(wl)
+
+	var blocker: String = sim.attack_blocker(region_idx, _attack_count)
+	var go := Button.new()
+	go.name = "go"
+	go.custom_minimum_size = Vector2(0, 44)
+	go.text = blocker if blocker != "" else "Send %d soldiers" % _attack_count
+	go.disabled = blocker != ""
+	go.pressed.connect(func():
+		if Game.cmd_attack(region_idx, _attack_count, _attack_mode):
+			close_sheet())
+	_sheet_box.add_child(go)
+
+
+# --- army ---------------------------------------------------------------------
+
+func _army_sheet() -> void:
+	var sim = Game.sim
+	_sheet_title("Army")
+	var away := 0.0
+	for battle in sim.battles:
+		away += battle.soldiers
+	_sheet_box.add_child(Look.label("%s at home · %s in battle" % [Look.num(sim.soldiers), Look.num(away)]))
+	var r: Dictionary = sim.rates()
+	var limit := "nothing"
+	for k in ["citizens", "equipment", "rations"]:
+		if sim.res[k] < 1.0:
+			limit = k
+			break
+	var info := Look.label("Barracks train up to %s. Each soldier takes 1 citizen, 1 equipment, 1 ration. Short on: %s." % [Look.rate(r.barracks_cap), limit], Look.FONT_SMALL, Look.DIM)
+	info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_sheet_box.add_child(info)
+
+	_sheet_box.add_child(Look.label("Keep this many soldiers at home:", Look.FONT_SIZE))
+	var steps := HBoxContainer.new()
+	steps.add_theme_constant_override("separation", 4)
+	for d in [-50, -10, 10, 50]:
+		var bt := Button.new()
+		bt.text = "%+d" % d
+		bt.custom_minimum_size = Vector2(44, 40)
+		bt.pressed.connect(func(): Game.cmd_train_target(int(sim.train_target) + d))
+		steps.add_child(bt)
+	var t := Look.label("  %d" % int(sim.train_target), Look.FONT_TITLE)
+	t.name = "target"
+	steps.add_child(t)
+	_sheet_box.add_child(steps)
+
+	for reg in sim.regions:
+		if sim.owns(reg.index) or sim.attack_blocker(reg.index, 1) == "Not on your border" or sim.battle_at(reg.index).size() > 0:
+			continue
+		var need: int = sim.preview_attack(reg.index, 1).needed
+		var btn := _row_button(null, "Train for %s" % reg.name, "Garrison %s" % Look.num(reg.garrison), "%d needed" % need,
+			func(): Game.cmd_train_target(need))
+		btn.name = "train_for_%d" % reg.index
+		_sheet_box.add_child(btn)
 
 
 # --- dev ----------------------------------------------------------------------

@@ -8,6 +8,8 @@ signal region_tapped(region_idx: int)
 
 const COLUMNS := 3
 
+var _battle_labels := {}   ## region -> Label
+
 
 func _ready() -> void:
 	add_theme_constant_override("separation", 4)
@@ -16,6 +18,7 @@ func _ready() -> void:
 
 func rebuild() -> void:
 	for c in get_children():
+		remove_child(c)   # detach now: the new nodes reuse the old names
 		c.queue_free()
 	var sim = Game.sim
 	var owned := 0
@@ -36,16 +39,44 @@ func rebuild() -> void:
 	grid.add_theme_constant_override("v_separation", 4)
 	grid.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	add_child(grid)
+	_battle_labels.clear()
+	var by_pos := {}
 	for reg in sim.regions:
-		grid.add_child(_region_tile(reg))
+		by_pos[sim.map_pos[reg.index]] = reg
+	var rows := 0
+	for p in by_pos:
+		rows = maxi(rows, p.y + 1)
+	for y in rows:
+		for x in COLUMNS:
+			var p := Vector2i(x, y)
+			if by_pos.has(p):
+				grid.add_child(_region_tile(by_pos[p]))
+			else:
+				grid.add_child(Control.new())
+	refresh_live()
+
+
+func refresh_live() -> void:
+	var sim = Game.sim
+	for idx in _battle_labels:
+		var battle: Dictionary = sim.battle_at(idx)
+		var l: Label = _battle_labels[idx]
+		if not is_instance_valid(l):
+			continue
+		if battle.is_empty():
+			l.text = ""
+		else:
+			var left := int(maxf(0.0, battle.ends_at - sim.hours) * 3600.0)
+			l.text = "Battle %d:%02d" % [left / 60, left % 60]
 
 
 func _region_tile(reg: Dictionary) -> Button:
 	var sim = Game.sim
 	var mine: bool = reg.owner == Sim.PLAYER
 	var fill: Color = Look.TERRAIN_COLORS.get(reg.terrain, Look.PANEL)
+	var reachable: bool = not mine and sim.neighbours(reg.index).any(func(n): return sim.owns(n))
 	if not mine:
-		fill = fill.darkened(0.45)
+		fill = fill.darkened(0.45 if reachable else 0.65)
 	var border: Color = Look.OWNER_COLORS.get(reg.owner, Look.LINE)
 	var tile := Button.new()
 	tile.name = "region_%d" % reg.index
@@ -67,6 +98,9 @@ func _region_tile(reg: Dictionary) -> Button:
 	box.add_child(name_l)
 	box.add_child(Look.label("You" if mine else reg.owner.split(" ")[0], Look.FONT_SMALL, border))
 	box.add_child(Look.label(reg.terrain, Look.FONT_SMALL, Look.TEXT if mine else Look.DIM))
+	var battle_l := Look.label("", Look.FONT_SIZE, Look.ACCENT)
+	box.add_child(battle_l)
+	_battle_labels[reg.index] = battle_l
 	var grow := Control.new()
 	grow.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	grow.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -75,5 +109,5 @@ func _region_tile(reg: Dictionary) -> Button:
 		var used: int = reg.slots - sim.free_slots(reg.index)
 		box.add_child(Look.label("%d/%d slots" % [used, reg.slots], Look.FONT_SMALL))
 	else:
-		box.add_child(Look.label("Garrison %s" % Look.num(reg.garrison), Look.FONT_SMALL, Look.DIM))
+		box.add_child(Look.label(("Border · " if reachable else "") + "Garrison %s" % Look.num(reg.garrison), Look.FONT_SMALL, Look.TEXT if reachable else Look.DIM))
 	return tile

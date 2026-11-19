@@ -65,6 +65,15 @@ func cmd_cancel_queued(index: int) -> bool:
 	return _after(sim.cancel_queued(index))
 
 
+func cmd_attack(region_idx: int, count: int, on_capture: String) -> bool:
+	return _after(sim.attack(region_idx, count, on_capture))
+
+
+func cmd_train_target(n: int) -> void:
+	sim.set_train_target(maxi(0, n))
+	_emit_changed()
+
+
 # --- dev only ----------------------------------------------------------------
 
 func dev_add_resources(amount: float) -> void:
@@ -110,4 +119,4 @@ func _structure() -> String:
 	for reg in sim.regions:
 		if reg.owner == Sim.PLAYER:
 			owned += 1 << reg.index
-	return "%d|%d|%d|%d" % [sim.buildings.size(), levels, owned, sim.queue.size()]
+	return "%d|%d|%d|%d|%d|%d" % [sim.buildings.size(), levels, owned, sim.queue.size(), sim.battles.size(), int(sim.train_target)]

@@ -50,7 +50,7 @@ func play() -> float:
 			sim.set_train_target(need)
 			_wait(func(): return sim.soldiers + 1e-6 >= need and (mode == Mode.EAGER or sim.queue.is_empty()))
 			step.ready = sim.hours
-			sim.attack(idx, need)
+			sim.attack(idx, need, sim.civs[sim.region(idx).civ].captured)
 			if mode == Mode.STRICT:
 				sim.set_train_target(0)   # the sheet trains nothing during a battle
 			if mode == Mode.EAGER and idx < last_region:
@@ -64,10 +64,12 @@ func play() -> float:
 	return sim.hours
 
 
-## Eager only: start training for the next conquest while this battle runs.
+## Eager only: start training for the next conquest (or talks for the next
+## annexation) while this battle runs.
 func _prepare_next_during_battle(next_idx: int) -> void:
 	var nxt: Dictionary = sim.region(next_idx)
 	if sim.civs[nxt.civ].method == "Annex":
+		sim.start_annex(next_idx)   # relations can warm up while the battle runs
 		return
 	sim.set_train_target(Combat.soldiers_needed(nxt.garrison, nxt.defense_mod, sim.b))
 

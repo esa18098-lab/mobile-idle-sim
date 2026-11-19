@@ -46,6 +46,10 @@ func _run_all() -> void:
 	_finished("test_upgrade_and_demolish", test_upgrade_and_demolish(b))
 	_finished("test_ui_matches_sim", test_ui_matches_sim())
 	_finished("test_ui_places_every_building_type", test_ui_places_every_building_type())
+	_finished("test_borders_and_battles", test_borders_and_battles(b))
+	_finished("test_raze", test_raze(b))
+	_finished("test_ui_attack_flow", test_ui_attack_flow())
+	_finished("test_conquer_whole_planet", test_conquer_whole_planet(b))
 
 	print("\n%d passed, %d failed, %d skipped" % [_passed, _failed, _skipped])
 	quit(1 if _failed > 0 else 0)
@@ -290,6 +294,83 @@ func test_ui_places_every_building_type() -> bool:
 	main.go_back()
 	_check("ui: back again returns to the planet", main.view.has_signal("region_tapped"))
 	main.queue_free()
+	return true
+
+
+# --- milestone 4: combat and conquest -----------------------------------------
+
+func test_borders_and_battles(b) -> bool:
+	var sim = Sim.new_home_planet(b)
+	_check("borders: Rustfield borders the capital", sim.attack_blocker(2, 1) == "")
+	_check("borders: Highmoor borders the capital", sim.attack_blocker(4, 1) == "")
+	_check("borders: Ironridge is not on your border yet", sim.attack_blocker(3, 1) == "Not on your border")
+	_check("borders: can't send more than you have", sim.attack_blocker(2, 21).begins_with("Only"))
+	# Two fronts at once: 12 at Rustfield (loses), 8 at Highmoor (loses badly).
+	_check("battles: two at once", sim.attack(2, 12) and sim.attack(4, 8))
+	_check("battles: no second attack on the same region", sim.attack_blocker(2, 0) == "Battle under way")
+	_check("battles: soldiers left home", is_equal_approx(sim.soldiers, 0.0))
+	var g2: float = sim.region(2).garrison
+	sim.advance(1.0)
+	_check("battles: both resolved within the hour", sim.battles.is_empty())
+	_check("battles: a loss keeps the region theirs", not sim.owns(2) and not sim.owns(4))
+	var dfn: float = g2 * b.num("def_advantage")
+	_check_close("battles: defenders keep the Lanchester share", sim.region(2).garrison, g2 * Combat.survivor_share(12, dfn))
+	_check("battles: losses are logged", sim.events.filter(func(e): return e.kind == "battle_lost").size() == 2)
+	return true
+
+
+func test_raze(b) -> bool:
+	var sim = Sim.new_home_planet(b)
+	var annex_before: float = sim.relations_hours(5)
+	var cit_before: float = sim.display_rates().citizens
+	sim.soldiers = 100.0
+	sim.attack(2, 30, "Raze")
+	sim.advance(0.2)
+	_check("raze: Rustfield taken", sim.owns(2))
+	_check("raze: no free buildings left", sim.region(2).kept_credits == 0 and sim.open_slots(2) == 4)
+	_check("raze: salvage paid", sim.res.metal >= 4 * b.num("raze_metal_per_slot") and sim.res.fuel >= 4 * b.num("raze_fuel_per_slot"))
+	_check_close("raze: citizens down by the penalty", sim.display_rates().citizens, cit_before * (1.0 - b.num("raze_output_penalty")))
+	_check_close("raze: annexing everyone slows by the damage", sim.relations_hours(5), annex_before * (1.0 + b.num("raze_relations_damage")))
+	sim.attack(4, 60, "Occupy")
+	sim.advance(0.3)
+	_check("raze: penalty ends at the next capture", sim.owns(4) and is_equal_approx(sim.display_rates().citizens, cit_before))
+	_check("raze: relations damage stays", sim.relations_hours(5) > annex_before)
+	return true
+
+
+func test_ui_attack_flow() -> bool:
+	var game := _game()
+	var main := _main_screen()
+	main.show_region(2)
+	var plan: Button = main.view.get_node("plan_attack")
+	plan.pressed.emit()
+	_check("ui attack: sheet suggests what you have (20 of 23 needed)", main._attack_count == 20)
+	main._sheet_box.get_node("go").pressed.emit()
+	_check("ui attack: battle started", game.sim.battle_at(2).size() > 0 and not main._sheet_layer.visible)
+	_check("ui attack: battle bar on the region view", main.view.has_node("battle"))
+	game.advance_seconds(600)
+	main._process(1.0)
+	_check("ui attack: 20 soldiers take Rustfield", game.sim.owns(2))
+	_check("ui attack: capture shown as a toast", main._toast_box.get_child_count() > 0)
+	_check("ui attack: region view now shows your slots", main.view.has_node("slots") and not main.view.has_node("plan_attack"))
+	main.queue_free()
+	return true
+
+
+## Milestone 4 "done when": the whole planet can be taken by force.
+func test_conquer_whole_planet(b) -> bool:
+	for raze_kharn in [false, true]:
+		var sim = Sim.new_home_planet(b)
+		for name in sim.civs:
+			sim.civs[name].method = "Conquer"
+		if raze_kharn:
+			sim.civs["Kharn Clans"].captured = "Raze"
+		var ap = AutoPlayer.new(sim, AutoPlayer.Mode.EAGER)
+		var hrs: float = ap.play()
+		var label := "conquer all" + (", raze Kharn" if raze_kharn else "")
+		_check("%s: every region yours" % label, sim.regions.all(func(r): return r.owner == Sim.PLAYER))
+		_check("%s: under the 6 h cap (%.2f h)" % [label, hrs], hrs <= 6.0)
+		_check_no_negative(sim, label)
 	return true
 
 

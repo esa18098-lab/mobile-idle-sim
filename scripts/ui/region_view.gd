@@ -9,10 +9,14 @@ const Sim := preload("res://scripts/sim/sim.gd")
 signal back_tapped
 signal empty_slot_tapped(region_idx: int)
 signal building_tapped(building_id: int)
+signal attack_tapped(region_idx: int)
 
 const COLUMNS := 4
 
 var region_idx := 1
+var _battle_label: Label
+var _battle_bar: ColorRect
+var _battle_track: Control
 
 
 func _ready() -> void:
@@ -22,6 +26,7 @@ func _ready() -> void:
 
 func rebuild() -> void:
 	for c in get_children():
+		remove_child(c)   # detach now: the new nodes reuse the old names
 		c.queue_free()
 	var sim = Game.sim
 	var reg: Dictionary = sim.region(region_idx)
@@ -51,9 +56,18 @@ func rebuild() -> void:
 	if not mine:
 		for i in reg.slots:
 			grid.add_child(_slot_tile(Icon.make(Look.DIM, "?", 2, true), "Held", reg.owner.split(" ")[0], "", true, Callable()))
-		var info := Look.label("Garrison %s, defense ×%.2f. Taking regions arrives in milestone 4; the Dev menu can hand you one to build in." % [Look.num(reg.garrison), reg.defense_mod], Look.FONT_SMALL, Look.DIM)
-		info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		add_child(info)
+		add_child(Look.label("Garrison %s · defense ×%.2f with home advantage ×%.2f" % [Look.num(reg.garrison), reg.defense_mod, sim.b.num("def_advantage")], Look.FONT_SIZE))
+		if sim.battle_at(region_idx).size() > 0:
+			_add_battle_bar()
+		else:
+			var blocker: String = sim.attack_blocker(region_idx, 1)
+			var plan := Button.new()
+			plan.name = "plan_attack"
+			plan.custom_minimum_size = Vector2(0, 44)
+			plan.text = "Plan attack" if blocker in ["", "Send at least one soldier"] or blocker.begins_with("Only") else blocker
+			plan.disabled = blocker == "Not on your border"
+			plan.pressed.connect(func(): attack_tapped.emit(region_idx))
+			add_child(plan)
 		return
 
 	for bd in sim.buildings_in(region_idx):
@@ -81,6 +95,39 @@ func rebuild() -> void:
 	summary.name = "summary"
 	summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	add_child(summary)
+
+
+func _add_battle_bar() -> void:
+	_battle_label = Look.label("", Look.FONT_SIZE, Look.ACCENT)
+	_battle_label.name = "battle"
+	add_child(_battle_label)
+	_battle_track = ColorRect.new()
+	_battle_track.color = Look.PANEL_HI
+	_battle_track.custom_minimum_size = Vector2(0, 8)
+	add_child(_battle_track)
+	_battle_bar = ColorRect.new()
+	_battle_bar.color = Look.ACCENT
+	_battle_track.add_child(_battle_bar)
+	refresh_live()
+
+
+## Called a few times a second: moves the battle bar without a full rebuild.
+func refresh_live() -> void:
+	if _battle_label == null or not is_instance_valid(_battle_label):
+		return
+	var sim = Game.sim
+	var battle: Dictionary = sim.battle_at(region_idx)
+	if battle.is_empty():
+		return
+	var total: float = battle.ends_at - battle.started_at
+	var done := clampf((sim.hours - battle.started_at) / total, 0.0, 1.0) if total > 0.0 else 1.0
+	var left := int(maxf(0.0, battle.ends_at - sim.hours) * 3600.0)
+	_battle_label.text = "Battle: %d attacking · %s left · then %s" % [battle.soldiers, _clock(left), battle.on_capture.to_lower()]
+	_battle_bar.size = Vector2(_battle_track.size.x * done, 8)
+
+
+static func _clock(secs: int) -> String:
+	return "%d:%02d" % [secs / 60, secs % 60] if secs < 3600 else "%d:%02d:%02d" % [secs / 3600, (secs / 60) % 60, secs % 60]
 
 
 func _slot_tile(icon: Control, line1: String, line2: String, line3: String, disabled: bool, on_tap: Callable) -> Button:
