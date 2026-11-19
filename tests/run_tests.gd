@@ -64,6 +64,8 @@ func _run_all() -> void:
 	_finished("test_npc_offline", test_npc_offline(b))
 	_finished("test_npc_playthrough", test_npc_playthrough(b))
 	_finished("test_ui_raids", test_ui_raids())
+	_finished("test_automation", test_automation(b))
+	_finished("test_ui_automation_only", test_ui_automation_only())
 
 	print("\n%d passed, %d failed, %d skipped" % [_passed, _failed, _skipped])
 	quit(1 if _failed > 0 else 0)
@@ -750,6 +752,66 @@ func test_ui_raids() -> bool:
 	game.advance_seconds(1800)
 	main._process(1.0)
 	_check("ui raid: the banner clears when it's over", main._raid_banner.get_child_count() == 0)
+	main.queue_free()
+	return true
+
+
+# --- milestone 8: automation ----------------------------------------------------
+
+func test_automation(b) -> bool:
+	var sim = Sim.new_home_planet(b)
+	sim.region(2).owner = Sim.PLAYER    # holding 2 regions puts automation on plan step 3 (avg level 1.35)
+	sim._rates_dirty = true
+	sim.automation.build = true
+	sim.automation.focus = "industry"
+	sim.res.metal = 5000.0
+	sim.res.fuel = 5000.0
+	sim.res.gold = 5000.0
+	sim.advance(0.05)
+	var mines = sim.buildings.filter(func(x): return x.type == "mine")
+	var others = sim.buildings.filter(func(x): return x.type != "mine" and x.type != "fuel_extractor")
+	_check("auto-build: fills Rustfield to the plan", sim.buildings.size() == 12)
+	var fuel = sim.buildings.filter(func(x): return x.type == "fuel_extractor")
+	_check("auto-build: industry focus upgrades mines and fuel first", mines.all(func(x): return x.level > 1) and fuel.all(func(x): return x.level > 1) and others.all(func(x): return x.level == 1))
+	var away = Sim.new_home_planet(b)
+	away.automation.build = true
+	away.automation.attack = true
+	away.catch_up(8.0)
+	var held: int = away.regions.filter(func(r): return r.owner == Sim.PLAYER).size()
+	_check("automation: keeps playing while you're away (%d regions after 8 h)" % held, held >= 8)
+	var j := JSON.stringify(away.to_dict(), "", true, true)
+	var c = Sim.new_home_planet(b)
+	c.apply_dict(JSON.parse_string(j))
+	_check("automation: settings survive a save", c.automation.build and c.automation.attack)
+	return true
+
+
+## Milestone 8 "done when": the planet can be finished without ever opening a
+## region view: only the Automate sheet, raids on.
+func test_ui_automation_only() -> bool:
+	var game := _game()
+	var main := _main_screen()
+	main.view.find_child("automate", true, false).pressed.emit()
+	main._sheet_box.get_node("auto_build").pressed.emit()
+	main._sheet_box.get_node("auto_attack").pressed.emit()
+	main._sheet_box.find_child("focus_military", true, false).pressed.emit()
+	main.close_sheet()
+	_check("automate: switched on through the sheet", game.sim.automation.build and game.sim.automation.attack and game.sim.automation.focus == "military")
+	_check("automate: raids are on", game.sim.npc_attacks_enabled)
+	var opened_region := false
+	var t := 0
+	while game.sim.regions.any(func(r): return r.owner != Sim.PLAYER) and game.sim.hours < 8.0:
+		game.advance_seconds(600)
+		t += 1
+		opened_region = opened_region or main.view.has_signal("move_soldiers")
+	_check("automate: the whole planet falls without opening a region (%.2f h)" % game.sim.hours, game.sim.regions.all(func(r): return r.owner == Sim.PLAYER) and not opened_region)
+	_check("automate: under the 6 h cap", game.sim.hours <= 6.0)
+	main._process(1.0)
+	_check("won: the planet-won sheet opens", main._sheet_layer.visible and main._sheet_box.has_node("times"))
+	var log: String = game.sim.playtest_log()
+	var lines := log.split("\n")
+	_check("won: playtest log has every region and the finish (%d lines)" % lines.size(), lines.size() >= 13 and lines[-1].begins_with("planet_won"))
+	_check("won: log lines carry wall-clock stamps", not lines[1].ends_with(",0"))
 	main.queue_free()
 	return true
 

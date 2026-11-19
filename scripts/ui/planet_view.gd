@@ -7,6 +7,7 @@ const Sim := preload("res://scripts/sim/sim.gd")
 signal region_tapped(region_idx: int)
 signal market_tapped
 signal diplomacy_tapped
+signal automate_tapped
 
 const COLUMNS := 3
 
@@ -36,7 +37,7 @@ func rebuild() -> void:
 	add_child(head)
 	var nav := HBoxContainer.new()
 	nav.add_theme_constant_override("separation", 4)
-	for pair in [["Market", market_tapped], ["Diplomacy", diplomacy_tapped]]:
+	for pair in [["Market", market_tapped], ["Diplomacy", diplomacy_tapped], ["Automate", automate_tapped]]:
 		var bt := Button.new()
 		bt.name = pair[0].to_lower()
 		bt.text = pair[0]

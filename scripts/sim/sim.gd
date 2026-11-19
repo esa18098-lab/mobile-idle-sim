@@ -49,6 +49,21 @@ var offline_losses := 0           ## regions lost during the current absence
 var rng := RandomNumberGenerator.new()
 const RNG_SEED := 20261118
 
+# --- automation (milestone 8): standing orders that play the planet for you ----
+## build: keep the economy on the sheet's Build Plan for your next target.
+## focus: which buildings get upgraded first (balanced, military, industry, food).
+## attack: train for and take the weakest region on your border, one at a time.
+var automation := {"build": false, "focus": "balanced", "attack": false, "on_capture": "Occupy"}
+const FOCUS_TYPES := {
+	"balanced": [],
+	"military": ["barracks", "factory_rations", "factory_equipment", "home"],
+	"industry": ["mine", "fuel_extractor"],
+	"food": ["farm", "home"],
+}
+const AUTOMATION_EVERY_HOURS := 10.0 / 3600.0
+var _automation_due := 0.0
+var planet_won_at := -1.0      ## game hours when the last region became yours
+
 # --- derived, cached ---------------------------------------------------------
 var _rates_dirty := true
 var _rates := {}
@@ -838,7 +853,13 @@ func _soldiers_in_battle_returning() -> float:
 
 
 func _resolve_events() -> void:
+	if planet_won_at < 0.0 and regions.all(func(r): return r.owner == PLAYER):
+		planet_won_at = hours
+		_log("Home planet won in %.2f h" % hours, "planet_won")
 	_maybe_launch_npc_attack()
+	if hours >= _automation_due:
+		_automation_due = hours + AUTOMATION_EVERY_HOURS
+		_automate()
 	for raid in npc_raids.duplicate():
 		if raid.battle_ends_at < 0.0 and hours + 1e-9 >= raid.warning_ends_at:
 			_raid_warning_over(raid)
@@ -893,6 +914,100 @@ func _finish_annex(region_idx: int) -> void:
 	raze_penalty = false
 	_rates_dirty = true
 	_log("Annexed %s" % reg.name, "annexed", region_idx)
+
+
+# =============================================================================
+# Automation
+# =============================================================================
+
+## The Build Plan row automation follows. Row N is the economy for attacking
+## with N-1 regions held, so it goes by how many you hold, in whatever order
+## you took them.
+func automation_step() -> int:
+	var held := 0
+	for reg in regions:
+		if reg.owner == PLAYER:
+			held += 1
+	return clampi(held + 1, 2, regions.size())
+
+
+func _automate() -> void:
+	if automation.build and queue.is_empty():
+		_auto_build()
+	if automation.attack:
+		_auto_attack()
+
+
+func _auto_build() -> void:
+	var plan := plan_for_region(automation_step())
+	for type in plan.counts:
+		if count_type(type) >= plan.counts[type]:
+			continue
+		var where := _auto_slot()
+		if where > 0:
+			queue_build(type, where)
+			return
+	var total := 0
+	for bd in buildings:
+		total += bd.level
+	if total < roundi(plan.avg_level * mini(plan.total, buildings.size())) and not buildings.is_empty():
+		queue_upgrade(_auto_upgrade_pick())
+
+
+## Free captured buildings first, then the first empty slot.
+func _auto_slot() -> int:
+	for reg in regions:
+		if reg.owner == PLAYER and reg.kept_credits > 0 and open_slots(reg.index) > 0:
+			return reg.index
+	for reg in regions:
+		if reg.owner == PLAYER and open_slots(reg.index) > 0:
+			return reg.index
+	return -1
+
+
+## The lowest-level building of the focus types (any type if balanced).
+func _auto_upgrade_pick() -> int:
+	var focus: Array = FOCUS_TYPES.get(automation.focus, [])
+	var best := {}
+	for bd in buildings:
+		var in_focus: bool = focus.is_empty() or bd.type in focus
+		var best_in: bool = not best.is_empty() and (focus.is_empty() or best.type in focus)
+		if best.is_empty() or (in_focus and not best_in) or (in_focus == best_in and bd.level < best.level):
+			best = bd
+	return best.id
+
+
+## The weakest enemy region on your border (fewest soldiers needed), skipping
+## civilizations you're in talks with.
+func auto_attack_target() -> int:
+	var best := -1
+	var best_need := INF
+	for reg in regions:
+		if reg.owner == PLAYER:
+			continue
+		var blk := attack_blocker(reg.index, 1)
+		if not (blk == "" or blk.begins_with("Only")):   # only "not enough soldiers yet" is fine
+			continue
+		if annexes.any(func(a): return region(a.region).civ == reg.owner):
+			continue
+		var need := Combat.soldiers_needed(reg.garrison, reg.defense_mod, b)
+		if need < best_need:
+			best_need = need
+			best = reg.index
+	return best
+
+
+func _auto_attack() -> void:
+	if not battles.is_empty():
+		return
+	var target := auto_attack_target()
+	if target < 0:
+		return
+	var reg := region(target)
+	var need := Combat.soldiers_needed(reg.garrison, reg.defense_mod, b)
+	train_target = maxf(train_target, need)
+	if soldiers + 1e-6 >= need:
+		attack(target, need, automation.on_capture)
 
 
 # =============================================================================
@@ -1036,11 +1151,22 @@ func to_dict() -> Dictionary:
 		"version": SAVE_VERSION, "hours": hours, "res": res.duplicate(), "soldiers": soldiers,
 		"train_target": train_target, "buildings": buildings.duplicate(true), "regions": regs,
 		"civs": civ_state, "queue": queue.duplicate(true), "battles": battles.duplicate(true),
-		"annexes": annexes.duplicate(true), "events": events.slice(maxi(0, events.size() - 50)),
+		"annexes": annexes.duplicate(true), "events": _events_to_save(),
 		"next_id": next_id, "razed_count": razed_count, "raze_penalty": raze_penalty, "market_recent": recent,
 		"npc_raids": npc_raids.duplicate(true), "next_npc_attack_at": next_npc_attack_at,
 		"auto_reinforce": auto_reinforce, "rng_state": str(rng.state), "npc_attacks_enabled": npc_attacks_enabled,
+		"automation": automation.duplicate(), "planet_won_at": planet_won_at,
 	}
+
+
+## The last 50 events, plus every conquest (the playtest log needs them all).
+func _events_to_save() -> Array:
+	var keep: Array = []
+	var cut := maxi(0, events.size() - 50)
+	for i in events.size():
+		if i >= cut or events[i].kind in ["captured", "annexed", "raid_lost", "planet_won"]:
+			keep.append(events[i])
+	return keep
 
 
 func apply_dict(d: Dictionary) -> void:
@@ -1077,7 +1203,10 @@ func apply_dict(d: Dictionary) -> void:
 		annexes.append({"region": int(a.region), "ends_at": float(a.ends_at), "paid": bool(a.paid)})
 	events = []
 	for e in d.events:
-		events.append({"hours": float(e.hours), "text": e.text, "kind": e.kind, "region": int(e.region)})
+		var ev := {"hours": float(e.hours), "text": e.text, "kind": e.kind, "region": int(e.region)}
+		if e.has("unix"):
+			ev["unix"] = float(e.unix)
+		events.append(ev)
 	next_id = int(d.next_id)
 	razed_count = int(d.razed_count)
 	raze_penalty = bool(d.raze_penalty)
@@ -1091,9 +1220,24 @@ func apply_dict(d: Dictionary) -> void:
 	next_npc_attack_at = float(d.get("next_npc_attack_at", next_npc_attack_at))
 	auto_reinforce = bool(d.get("auto_reinforce", true))
 	npc_attacks_enabled = bool(d.get("npc_attacks_enabled", true))
+	planet_won_at = float(d.get("planet_won_at", -1.0))
+	if d.has("automation"):
+		for k in d.automation:
+			automation[k] = d.automation[k]
 	if d.has("rng_state"):
 		rng.state = int(d.rng_state)
 	_rates_dirty = true
+
+
+## Playtest log: one CSV line per region taken, in game hours, so real play can
+## be set against the sheet (tools/sheet_model.py). `unix` is wall-clock time.
+func playtest_log() -> String:
+	var lines: PackedStringArray = ["event,region,name,game_hours,unix"]
+	for e in events:
+		if e.kind in ["captured", "annexed", "raid_lost", "planet_won"]:
+			var name: String = region(e.region).name if e.region > 0 else ""
+			lines.append("%s,%d,%s,%.4f,%d" % [e.kind, e.region, name, e.hours, int(e.get("unix", 0))])
+	return "\n".join(lines)
 
 
 func _add_building(type: String, level: int, region_idx: int) -> void:

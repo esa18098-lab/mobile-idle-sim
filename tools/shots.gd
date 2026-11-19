@@ -95,6 +95,12 @@ func _initialize() -> void:
 		["raid_region", func():
 			_main.show_region(Game.sim.npc_raids[0].target)
 			_main._process(1.0)],
+		["automate", func():
+			Game.new_game()
+			Game.cmd_automation("build", true)
+			Game.cmd_automation("focus", "military")
+			_main.show_planet()
+			_main._open_sheet(_main._automation_sheet)],
 	]
 
 

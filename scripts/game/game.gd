@@ -73,6 +73,7 @@ func catch_up_seconds(seconds: float) -> Dictionary:
 	var soldiers_before: float = sim.soldiers
 	var first_event: int = sim.events.size()
 	sim.catch_up(seconds / 3600.0)
+	_stamp_events()
 	var gained := {}
 	for k in sim.res:
 		gained[k] = sim.res[k] - before[k]
@@ -132,6 +133,7 @@ func advance_seconds(seconds: float) -> void:
 		return
 	_acc -= ticks
 	sim.advance(ticks * Sim.TICK_HOURS)
+	_stamp_events()
 	ticked.emit()
 	if _structure() != _signature:
 		_emit_changed()
@@ -190,6 +192,12 @@ func cmd_withdraw(region_idx: int, n: int) -> bool:
 	return _after(sim.withdraw(region_idx, n))
 
 
+func cmd_automation(key: String, value) -> void:
+	sim.automation[key] = value
+	sim._automation_due = sim.hours   # act on it right away
+	_emit_changed()
+
+
 func cmd_auto_reinforce(on: bool) -> void:
 	sim.auto_reinforce = on
 	_emit_changed()
@@ -223,6 +231,15 @@ func dev_take_next_region() -> int:
 
 # --- internals ---------------------------------------------------------------
 
+## Wall-clock stamps on new events, for the playtest log.
+func _stamp_events() -> void:
+	var now := now_unix()
+	for i in range(sim.events.size() - 1, -1, -1):
+		if sim.events[i].has("unix"):
+			break
+		sim.events[i]["unix"] = now
+
+
 func _garrisons() -> int:
 	var t := 0.0
 	for reg in sim.regions:
@@ -252,4 +269,4 @@ func _structure() -> String:
 	for reg in sim.regions:
 		if reg.owner == Sim.PLAYER:
 			owned += 1 << reg.index
-	return "%d|%d|%d|%d|%d|%d" % [sim.buildings.size(), levels, owned, sim.queue.size(), sim.battles.size(), int(sim.train_target)] + "|%d|%d|%d|%d" % [sim.npc_raids.size(), int(sim.auto_reinforce), roundi(sim.soldiers), _garrisons()] + "|%d" % (sim.annexes.size() + sim.civs.values().filter(func(c): return c.trade).size() * 100)
+	return "%d|%d|%d|%d|%d|%d" % [sim.buildings.size(), levels, owned, sim.queue.size(), sim.battles.size(), int(sim.train_target)] + "|%d|%d|%d|%d" % [sim.npc_raids.size(), int(sim.auto_reinforce), roundi(sim.soldiers), _garrisons()] + str(sim.automation) + "|%d" % (sim.annexes.size() + sim.civs.values().filter(func(c): return c.trade).size() * 100)

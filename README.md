@@ -17,7 +17,8 @@
 | 5. NPC behaviour | Done. Attacks launch only while the app is open, about once an hour of play, from an enemy region on your border at your weakest region (never the capital), sending half that region's garrison. A warning comes first. Standing order: soldiers at home auto-reinforce. Repelling pays 0.75 gold per attacker; losing gives the region and its buildings back. At most one region lost per absence. Trade partners and civilizations in talks don't attack. |
 | 6. Diplomacy and market | Done. Free trade rights, annexation of any civilization (one talk per civilization at a time), and a market whose price moves with your trades and recovers 10% an hour, with manual buy and sell. The conquer-everyone and annex-Veyra paths match the sheet's maths within 5% at every region. |
 | 7. Offline progress and saves | Done. Saves are JSON plus a checksum, written safely and loaded at start, on resume and every 30 s. Offline catch-up uses 60 s steps that stop at battle and annexation ends: 8 h away matches 8 h live within 1%, and a week catches up in about 0.1 s. A "while you were away" summary, notification timing (delivery needs an Android plugin), and the server stubs. Storage caps are built but off until the sheet has a `storage_cap_hours` key. |
-| 8. Automation | Needs a design pass: what each planet focus does. |
+| 8. Automation | Done. The Automate sheet sets standing orders that keep running while you're away. Auto-build follows the sheet's Build Plan. Focus (balanced, military, industry, food) decides which buildings get upgraded first. Auto-attack takes the weakest region on your border. With only these switched on and raids running, the planet falls in about 3.8 h without opening a region view. |
+| 9. Playtest build | The game side is ready: conquest timestamps, a "Home planet won" screen, and **Copy playtest log**. The Play export preset is set up. Your steps are below. |
 
 ### What the two playthroughs mean
 
@@ -72,6 +73,7 @@ scripts/ui/     main_screen.gd (resource bar, views, queue, sheets), planet_view
 assets/fonts/   Silkscreen (SIL OFL), an 8 px pixel font: use sizes 8 or 16 only.
 data/maps/      home_planet.csv: where each region sits on the map grid. Regions that sit side by side share a border.
 tools/          playthrough.gd: prints a region-by-region playthrough next to the sheet.
+                sheet_model.py: the Timeline tab in Python (exact), for any path; --golden writes tests/golden.
                 paths.gd: compares the paths through the home planet.
                 shots.gd: renders every screen to PNGs (needs a display; xvfb-run on a server).
 scripts/autoload/  Balance: the one loaded copy of the balance data.
@@ -122,6 +124,17 @@ What you should see: the home planet map. Tap the capital to see its 8 buildings
 **Notifications** need an Android local-notification plugin; see `scripts/game/notifier.gd`. Until one is installed the game still works out when to notify; it just can't deliver.
 
 Signing keys (`*.keystore`, `*.jks`) are git-ignored. Keep the release keystore somewhere safe outside the repo; losing it means you can't update the app on the Play Store.
+
+## Playtest release on Google Play (milestone 9)
+
+1. In the editor: **Project → Install Android Build Template**. Play needs an app bundle (.aab), and that needs Godot's Gradle build.
+2. Make an upload key and keep it outside the repo. Losing it means you can't update the app.
+   `keytool -genkey -v -keystore upload.keystore -alias upload -keyalg RSA -keysize 2048 -validity 10000`
+3. **Project → Export → "Android (Play)"**: set *Keystore → Release* to that file, alias and password. Godot keeps these in `export_credentials.cfg`, which is git-ignored. Then export the .aab.
+4. In Play Console: create the app, then **Testing → Internal testing → Create release**. Upload the .aab, add your testers' emails, and send them the opt-in link.
+5. Testers play to the end. The "Home planet won" screen has **Copy playtest log**, and they paste it to you. Give the logs to Claude to set against `tools/sheet_model.py`.
+
+Internal testing is available straight away. To publish publicly later, a personal developer account made after 13 Nov 2023 must first run a **closed** test with at least 12 testers opted in for 14 days in a row. Internal testing doesn't count toward that.
 
 ## Art
 

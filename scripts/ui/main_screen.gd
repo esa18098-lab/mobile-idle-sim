@@ -57,8 +57,8 @@ func _ready() -> void:
 	col.add_child(_content)
 
 	col.add_child(_bottom_bar())
-	_build_sheet_layer()
 	# Pop-ups stack just above the bottom bar, clear of the resource bar and raid lines.
+	# Added before the sheet layer so an open sheet covers them.
 	_toast_box = VBoxContainer.new()
 	_toast_box.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE, Control.PRESET_MODE_MINSIZE, 6)
 	_toast_box.offset_bottom = -56
@@ -66,6 +66,7 @@ func _ready() -> void:
 	_toast_box.alignment = BoxContainer.ALIGNMENT_END
 	_toast_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_toast_box)
+	_build_sheet_layer()
 	_seen_events = Game.sim.events.size()
 
 	Game.changed.connect(_on_changed)
@@ -113,6 +114,7 @@ func show_planet() -> void:
 	view.region_tapped.connect(show_region)
 	view.market_tapped.connect(func(): _open_sheet(_market_sheet))
 	view.diplomacy_tapped.connect(func(): _open_sheet(_diplomacy_sheet))
+	view.automate_tapped.connect(func(): _open_sheet(_automation_sheet))
 
 
 func show_region(idx: int) -> void:
@@ -138,7 +140,15 @@ func _set_view(v: Control) -> void:
 	_content.add_child(v)
 
 
+var _last_sim = null
+
 func _on_changed() -> void:
+	if Game.sim != _last_sim:   # new game or loaded save: drop the old game's pop-ups
+		_last_sim = Game.sim
+		for c in _toast_box.get_children():
+			c.queue_free()
+		_seen_events = Game.sim.events.size()
+		_refresh_raid_banner()
 	if view and view.has_method("rebuild"):
 		view.rebuild()
 	resource_bar.refresh()
@@ -251,6 +261,8 @@ func _show_new_events() -> void:
 	while _seen_events < events.size():
 		var e: Dictionary = events[_seen_events]
 		_seen_events += 1
+		if e.kind == "planet_won":
+			_open_sheet(_won_sheet)
 		if e.kind in ["captured", "battle_lost", "annexed", "raid_warning", "raid_repelled", "raid_lost"]:
 			toast(e.text, Look.BAD if e.kind in ["battle_lost", "raid_warning", "raid_lost"] else Look.ACCENT)
 
@@ -588,7 +600,7 @@ func _army_sheet() -> void:
 	_sheet_box.add_child(info)
 
 	var auto := _row_button(null, "Auto-reinforce: %s" % ("ON" if sim.auto_reinforce else "OFF"),
-		"When an attack's warning ends, soldiers at home move in to hold the region.", "tap to switch",
+		"When an attack's warning ends, soldiers at home move in to hold the region.", "",
 		func(): Game.cmd_auto_reinforce(not sim.auto_reinforce))
 	auto.name = "auto_reinforce"
 	_sheet_box.add_child(auto)
@@ -639,6 +651,81 @@ func _away_sheet(summary: Dictionary) -> void:
 		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		_sheet_box.add_child(l)
 	_seen_events = Game.sim.events.size()   # already shown here, no toasts
+
+
+# --- planet won ----------------------------------------------------------------
+
+func _won_sheet() -> void:
+	var sim = Game.sim
+	_sheet_title("Home planet won")
+	var h: float = sim.planet_won_at
+	_sheet_box.add_child(Look.label("All 12 regions in %dh %02dm of game time." % [int(h), int(h * 60.0) % 60], Look.FONT_SIZE, Look.ACCENT))
+	var lines: PackedStringArray = []
+	for e in sim.events:
+		if e.kind in ["captured", "annexed"]:
+			lines.append("%5.2f h  %s %s" % [e.hours, "took" if e.kind == "captured" else "annexed", sim.region(e.region).name])
+	var l := Look.label("\n".join(lines), Look.FONT_SMALL, Look.TEXT)
+	l.name = "times"
+	_sheet_box.add_child(l)
+	var copy := _row_button(null, "Copy playtest log", "Paste it into a message to send your times.", "", func():
+		DisplayServer.clipboard_set(sim.playtest_log())
+		toast("Playtest log copied."))
+	copy.name = "copy_log"
+	_sheet_box.add_child(copy)
+	_sheet_box.add_child(Look.label("Next: the station, and the solar system.", Look.FONT_SMALL, Look.DIM))
+
+
+# --- automation ---------------------------------------------------------------
+
+func _automation_sheet() -> void:
+	var sim = Game.sim
+	var a: Dictionary = sim.automation
+	_sheet_title("Automate")
+	var intro := Look.label("Standing orders. They keep running while you're away.", Look.FONT_SMALL, Look.DIM)
+	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_sheet_box.add_child(intro)
+	var build := _row_button(null, "Auto-build: %s" % ("ON" if a.build else "OFF"),
+		"Builds and upgrades to the plan for your next region (step %d)." % sim.automation_step(), "",
+		func(): Game.cmd_automation("build", not a.build))
+	build.name = "auto_build"
+	_sheet_box.add_child(build)
+	_sheet_box.add_child(Look.label("Focus: which buildings get upgraded first", Look.FONT_SIZE))
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	for f in ["balanced", "military", "industry", "food"]:
+		var fb := Button.new()
+		fb.name = "focus_" + f
+		fb.text = f.capitalize()
+		fb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		fb.custom_minimum_size = Vector2(0, 36)
+		if a.focus == f:
+			fb.add_theme_color_override("font_color", Look.ACCENT)
+			fb.add_theme_stylebox_override("normal", Look.flat_box(Look.PANEL_HI, Look.ACCENT, 1, 6))
+		fb.pressed.connect(func(): Game.cmd_automation("focus", f))
+		row.add_child(fb)
+	_sheet_box.add_child(row)
+	var target: int = sim.auto_attack_target()
+	var attack := _row_button(null, "Auto-attack: %s" % ("ON" if a.attack else "OFF"),
+		("Next: %s" % sim.region(target).name if target > 0 else "No region on your border to attack") + " · then %s" % a.on_capture.to_lower(),
+		"", func(): Game.cmd_automation("attack", not a.attack))
+	attack.name = "auto_attack"
+	_sheet_box.add_child(attack)
+	var cap := HBoxContainer.new()
+	cap.add_theme_constant_override("separation", 4)
+	for m in ["Occupy", "Raze"]:
+		var mb := Button.new()
+		mb.text = m
+		mb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		mb.custom_minimum_size = Vector2(0, 32)
+		if a.on_capture == m:
+			mb.add_theme_color_override("font_color", Look.ACCENT)
+		mb.pressed.connect(func(): Game.cmd_automation("on_capture", m))
+		cap.add_child(mb)
+	_sheet_box.add_child(cap)
+	var reinforce := _row_button(null, "Auto-reinforce: %s" % ("ON" if sim.auto_reinforce else "OFF"),
+		"Soldiers at home move in when an attack's warning ends.", "",
+		func(): Game.cmd_auto_reinforce(not sim.auto_reinforce))
+	_sheet_box.add_child(reinforce)
 
 
 # --- diplomacy ----------------------------------------------------------------
@@ -761,6 +848,8 @@ func _dev_sheet() -> void:
 		close_sheet()
 		if idx > 0:
 			show_region(idx)))
+	_sheet_box.add_child(_row_button(null, "Playtest log", "Times for every region taken so far", "", func():
+		_open_sheet(_won_sheet)))
 	_sheet_box.add_child(_row_button(null, "New game", "Throws away this run", "", func():
 		Game.new_game()
 		close_sheet()
