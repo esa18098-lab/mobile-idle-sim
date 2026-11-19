@@ -10,6 +10,7 @@ signal back_tapped
 signal empty_slot_tapped(region_idx: int)
 signal building_tapped(building_id: int)
 signal attack_tapped(region_idx: int)
+signal annex_tapped(region_idx: int)
 
 const COLUMNS := 4
 
@@ -67,7 +68,18 @@ func rebuild() -> void:
 			plan.text = "Plan attack" if blocker in ["", "Send at least one soldier"] or blocker.begins_with("Only") else blocker
 			plan.disabled = blocker == "Not on your border"
 			plan.pressed.connect(func(): attack_tapped.emit(region_idx))
-			add_child(plan)
+			var annex := Button.new()
+			annex.name = "annex"
+			annex.custom_minimum_size = Vector2(0, 44)
+			annex.text = "Annex: talks under way" if sim.annexing(region_idx) else "Annex instead (diplomacy)"
+			annex.pressed.connect(func(): annex_tapped.emit(region_idx))
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 4)
+			plan.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			annex.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			row.add_child(plan)
+			row.add_child(annex)
+			add_child(row)
 		return
 
 	for bd in sim.buildings_in(region_idx):

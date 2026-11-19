@@ -60,6 +60,16 @@ func _initialize() -> void:
 		["captured", func():
 			Game.advance_seconds(120)
 			_main._process(1.0)],
+		["diplomacy", func():
+			Game.cmd_sign_trade("Veyra Compact")
+			Game.cmd_annex(5)
+			Game.advance_seconds(300)
+			_main.show_planet()
+			_main._open_sheet(_main._diplomacy_sheet)],
+		["market", func():
+			Game.dev_add_resources(2000.0)
+			Game.cmd_sell("metal", 1000.0)
+			_main._open_sheet(_main._market_sheet)],
 	]
 
 

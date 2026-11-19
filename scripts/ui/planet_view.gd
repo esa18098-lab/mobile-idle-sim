@@ -5,6 +5,8 @@ const Look := preload("res://scripts/ui/look.gd")
 const Sim := preload("res://scripts/sim/sim.gd")
 
 signal region_tapped(region_idx: int)
+signal market_tapped
+signal diplomacy_tapped
 
 const COLUMNS := 3
 
@@ -32,6 +34,18 @@ func rebuild() -> void:
 	head.add_child(spacer)
 	head.add_child(Look.label("%d of %d regions" % [owned, sim.regions.size()], Look.FONT_SIZE, Look.DIM))
 	add_child(head)
+	var nav := HBoxContainer.new()
+	nav.add_theme_constant_override("separation", 4)
+	for pair in [["Market", market_tapped], ["Diplomacy", diplomacy_tapped]]:
+		var bt := Button.new()
+		bt.name = pair[0].to_lower()
+		bt.text = pair[0]
+		bt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		bt.custom_minimum_size = Vector2(0, 32)
+		var sig: Signal = pair[1]
+		bt.pressed.connect(func(): sig.emit())
+		nav.add_child(bt)
+	add_child(nav)
 
 	var grid := GridContainer.new()
 	grid.columns = COLUMNS

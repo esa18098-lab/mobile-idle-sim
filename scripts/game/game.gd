@@ -69,6 +69,29 @@ func cmd_attack(region_idx: int, count: int, on_capture: String) -> bool:
 	return _after(sim.attack(region_idx, count, on_capture))
 
 
+func cmd_sign_trade(civ_name: String) -> bool:
+	return _after(sim.sign_trade(civ_name))
+
+
+func cmd_annex(region_idx: int) -> bool:
+	return _after(sim.start_annex(region_idx))
+
+
+func cmd_sell(res_name: String, qty: float) -> bool:
+	var ok: bool = sim.sell(res_name, qty)
+	if ok:
+		ticked.emit()
+	return ok
+
+
+func cmd_buy(res_name: String, qty: float) -> bool:
+	var ok: bool = sim.buy(res_name, qty)
+	if ok:
+		sim._pay_queue()
+		ticked.emit()
+	return ok
+
+
 func cmd_train_target(n: int) -> void:
 	sim.set_train_target(maxi(0, n))
 	_emit_changed()
@@ -119,4 +142,4 @@ func _structure() -> String:
 	for reg in sim.regions:
 		if reg.owner == Sim.PLAYER:
 			owned += 1 << reg.index
-	return "%d|%d|%d|%d|%d|%d" % [sim.buildings.size(), levels, owned, sim.queue.size(), sim.battles.size(), int(sim.train_target)]
+	return "%d|%d|%d|%d|%d|%d" % [sim.buildings.size(), levels, owned, sim.queue.size(), sim.battles.size(), int(sim.train_target)] + "|%d" % (sim.annexes.size() + sim.civs.values().filter(func(c): return c.trade).size() * 100)

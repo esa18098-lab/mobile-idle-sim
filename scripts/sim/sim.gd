@@ -32,6 +32,10 @@ var next_id := 1              ## buildings get stable ids: indexes shift on demo
 var razed_count := 0          ## regions razed so far (slows every later annexation)
 var raze_penalty := false     ## citizens and gold down until your next capture
 var map_pos := {}             ## region -> Vector2i on the map grid; borders come from it
+var market := {}              ## resource -> {base, supply, demand, sens, recent}
+## `recent` is the player's recent net sales (units/hr equivalent): selling
+## pushes prices down, buying pushes them up, and it fades by
+## market_recovery_per_hr each hour.
 
 const MAP_PATH := "res://data/maps/home_planet.csv"
 
@@ -56,6 +60,7 @@ func _setup(data: BalanceData) -> void:
 	_load_civs()
 	_load_regions()
 	_load_map()
+	_load_market()
 	soldiers = b.num("starting_soldiers")
 	# The capital starts built out with the first build-plan row, all at level 1.
 	var first_plan := plan_for_region(2)
@@ -69,7 +74,8 @@ func _load_civs() -> void:
 	for row in b.rows("civilizations"):
 		civs[row["Civilization"]] = {
 			"method": row["Method"],
-			"trade": row["Trade rights"].to_upper() == "TRUE",
+			"trade": false,   ## the player signs trade rights in game
+			"plan_trade": row["Trade rights"].to_upper() == "TRUE",   ## the sheet path's choice
 			"first": int(row["First region"]),
 			"last": int(row["Last region"]),
 			"captured": row["Captured regions"],
@@ -98,6 +104,17 @@ func _load_regions() -> void:
 			"kept_credits": 0,    ## captured buildings that fit your plan: free to place here
 			"kept_level": 1,
 		})
+
+
+func _load_market() -> void:
+	for row in b.rows("market"):
+		market[row["Resource"].to_lower()] = {
+			"base": BalanceData.parse_number(row["Base price"]),
+			"supply": BalanceData.parse_number(row["NPC supply/hr"]),
+			"demand": BalanceData.parse_number(row["NPC demand/hr"]),
+			"sens": BalanceData.parse_number(row["Sensitivity"]),
+			"recent": 0.0,
+		}
 
 
 func _load_map() -> void:
@@ -282,28 +299,58 @@ func display_rates() -> Dictionary:
 	var citizens: float = r.citizens * penalty
 	var food_net: float = r.food - citizens * b.num("food_per_citizen")
 	var sold := maxf(0.0, food_net) * b.num("food_sell_share")
-	var fee := b.num("market_fee") - b.num("trade_fee_cut_per_partner") * active_trade_partners()
 	return {
 		"citizens": citizens,
 		"food": food_net - sold if food_net > 0.0 else food_net,
 		"metal": r.metal,
 		"fuel": r.fuel,
-		"gold": sold * food_price(sold) * (1.0 - fee) * penalty,
+		"gold": sold * food_price(sold) * sale_keep() * penalty,
 		"rations": r.rations_cap,
 		"equipment": r.equipment_cap,
 		"soldiers": r.barracks_cap,
 	}
 
 
-## Settled market price for food at the player's current selling rate (per hr).
+## Market price of a resource. `flow` is the player's ongoing sales per hour
+## (food is sold continuously); `recent` adds the after-effect of manual trades.
+func market_price(res_name: String, flow: float = 0.0, extra: float = 0.0) -> float:
+	var m: Dictionary = market[res_name]
+	var denom := maxf(1.0, m.supply + flow + m.recent + extra)
+	var p: float = m.base * pow(m.demand / denom, m.sens)
+	return clampf(p, m.base * b.num("market_price_floor"), m.base * b.num("market_price_ceiling"))
+
+
+## Settled food price at the player's selling rate (per hour).
 func food_price(sell_per_hr: float) -> float:
-	var row := b.find_row("market", "Resource", "Food")
-	var base := BalanceData.parse_number(row["Base price"])
-	var supply := BalanceData.parse_number(row["NPC supply/hr"])
-	var demand := BalanceData.parse_number(row["NPC demand/hr"])
-	var sens := BalanceData.parse_number(row["Sensitivity"])
-	var p := base * pow(demand / (supply + sell_per_hr), sens)
-	return clampf(p, base * b.num("market_price_floor"), base * b.num("market_price_ceiling"))
+	return market_price("food", sell_per_hr)
+
+
+## What the player keeps of a sale after the market fee (trade partners cut it).
+func sale_keep() -> float:
+	return 1.0 - b.num("market_fee") + b.num("trade_fee_cut_per_partner") * active_trade_partners()
+
+
+## Gold for selling `qty` now: the lot moves the price, so it sells at the
+## average of the price before and after.
+func quote_sell(res_name: String, qty: float) -> float:
+	var flow := _food_flow() if res_name == "food" else 0.0
+	var p0 := market_price(res_name, flow)
+	var p1 := market_price(res_name, flow, qty)
+	return qty * (p0 + p1) * 0.5 * sale_keep()
+
+
+## Gold needed to buy `qty` now. The fee applies on purchases too.
+func quote_buy(res_name: String, qty: float) -> float:
+	var flow := _food_flow() if res_name == "food" else 0.0
+	var p0 := market_price(res_name, flow)
+	var p1 := market_price(res_name, flow, -qty)
+	return qty * (p0 + p1) * 0.5 * (2.0 - sale_keep())
+
+
+func _food_flow() -> float:
+	var r := rates()
+	var net: float = r.food - r.citizens * raze_output_mult() * b.num("food_per_citizen")
+	return maxf(0.0, net) * b.num("food_sell_share")
 
 
 func active_trade_partners() -> int:
@@ -449,6 +496,40 @@ func demolish(building_id: int) -> bool:
 	return true
 
 
+## Sign free trade rights with a civilization: a smaller market fee while they
+## last, and annexation talks with them go faster.
+func sign_trade(civ_name: String) -> bool:
+	if not civs.has(civ_name) or civs[civ_name].trade or civ_absorbed(civ_name):
+		return false
+	if res.gold < b.num("trade_signing_fee"):
+		return false
+	res.gold -= b.num("trade_signing_fee")
+	civs[civ_name].trade = true
+	_log("Signed trade rights with %s" % civ_name, "diplomacy")
+	return true
+
+
+func sell(res_name: String, qty: float) -> bool:
+	if not market.has(res_name) or qty <= 0.0 or res[res_name] < qty:
+		return false
+	res.gold += quote_sell(res_name, qty)
+	res[res_name] -= qty
+	market[res_name].recent += qty
+	return true
+
+
+func buy(res_name: String, qty: float) -> bool:
+	if not market.has(res_name) or qty <= 0.0:
+		return false
+	var cost := quote_buy(res_name, qty)
+	if res.gold < cost:
+		return false
+	res.gold -= cost
+	res[res_name] += qty
+	market[res_name].recent -= qty
+	return true
+
+
 func set_train_target(n: float) -> void:
 	train_target = n
 
@@ -468,8 +549,22 @@ func attack(region_idx: int, count: int, on_capture: String = "Occupy") -> bool:
 	return true
 
 
+## Why a region can't be annexed right now, or "" if it can.
+func annex_blocker(region_idx: int) -> String:
+	if owns(region_idx):
+		return "Already yours"
+	if battle_at(region_idx).size() > 0:
+		return "Battle under way"
+	if annexing(region_idx):
+		return "Talks under way"
+	var civ_name: String = region(region_idx).civ
+	if annexes.any(func(a): return region(a.region).civ == civ_name):
+		return "One talk at a time per civ"
+	return ""
+
+
 func start_annex(region_idx: int) -> bool:
-	if owns(region_idx) or civs[region(region_idx).civ].method != "Annex" or annexing(region_idx):
+	if annex_blocker(region_idx) != "":
 		return false
 	annexes.append({"region": region_idx, "ends_at": hours + relations_hours(region_idx), "paid": false})
 	queue.push_front({"kind": "annex_gold", "region": region_idx})
@@ -499,13 +594,16 @@ func _tick(dt: float) -> void:
 	var food_net: float = r.food * dt - citizens_made * b.num("food_per_citizen")
 	if food_net > 0.0:
 		var sold := food_net * b.num("food_sell_share")
-		var fee := b.num("market_fee") - b.num("trade_fee_cut_per_partner") * active_trade_partners()
-		res.gold += sold * food_price(sold / dt) * (1.0 - fee) * penalty
+		res.gold += sold * food_price(sold / dt) * sale_keep() * penalty
 		res.food += food_net - sold
 	else:
 		res.food = maxf(0.0, res.food + food_net)
 	res.metal += r.metal * dt
 	res.fuel += r.fuel * dt
+
+	var fade := pow(1.0 - b.num("market_recovery_per_hr"), dt)
+	for k in market:
+		market[k].recent *= fade
 
 	_pay_queue()
 	_run_factories(dt, r)

@@ -17,6 +17,8 @@ var _queue_btn: Button
 var _clock: Label
 var _sheet_layer: Control
 var _sheet_box: VBoxContainer
+var _sheet_scroll: ScrollContainer
+const SHEET_MAX_HEIGHT := 540.0
 var _sheet_builder := Callable()  ## rebuilds the open sheet when the game changes
 var _since_refresh := 0.0
 var _demolish_armed := -1
@@ -74,7 +76,7 @@ func _process(delta: float) -> void:
 	_show_new_events()
 	if view and view.has_method("refresh_live"):
 		view.refresh_live()
-	if _sheet_layer.visible and _sheet_builder.is_valid() and _sheet_builder.get_method() in [&"_queue_sheet", &"_army_sheet"]:
+	if _sheet_layer.visible and _sheet_builder.is_valid() and _sheet_builder.get_method() in [&"_queue_sheet", &"_army_sheet", &"_diplomacy_sheet", &"_market_sheet"]:
 		_rebuild_sheet()
 
 
@@ -100,6 +102,8 @@ func go_back() -> void:
 func show_planet() -> void:
 	_set_view(PlanetView.new())
 	view.region_tapped.connect(show_region)
+	view.market_tapped.connect(func(): _open_sheet(_market_sheet))
+	view.diplomacy_tapped.connect(func(): _open_sheet(_diplomacy_sheet))
 
 
 func show_region(idx: int) -> void:
@@ -110,6 +114,7 @@ func show_region(idx: int) -> void:
 	rv.empty_slot_tapped.connect(open_build_sheet)
 	rv.building_tapped.connect(open_building_sheet)
 	rv.attack_tapped.connect(open_attack_sheet)
+	rv.annex_tapped.connect(func(_idx): _open_sheet(_diplomacy_sheet))
 
 
 func _set_view(v: Control) -> void:
@@ -209,9 +214,13 @@ func _build_sheet_layer() -> void:
 	panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE, Control.PRESET_MODE_MINSIZE)
 	panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	_sheet_layer.add_child(panel)
+	_sheet_scroll = ScrollContainer.new()
+	_sheet_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	panel.add_child(_sheet_scroll)
 	_sheet_box = VBoxContainer.new()
 	_sheet_box.add_theme_constant_override("separation", 6)
-	panel.add_child(_sheet_box)
+	_sheet_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_sheet_scroll.add_child(_sheet_box)
 
 
 func _open_sheet(builder: Callable) -> void:
@@ -256,6 +265,13 @@ func _rebuild_sheet() -> void:
 		c.queue_free()
 	if _sheet_builder.is_valid():
 		_sheet_builder.call()
+	_fit_sheet.call_deferred()
+
+
+## Sheets grow with their content up to SHEET_MAX_HEIGHT, then scroll.
+func _fit_sheet() -> void:
+	var h := minf(_sheet_box.get_combined_minimum_size().y, SHEET_MAX_HEIGHT)
+	_sheet_scroll.custom_minimum_size = Vector2(0, h)
 
 
 func _sheet_title(text: String) -> void:
@@ -554,6 +570,101 @@ func _army_sheet() -> void:
 			func(): Game.cmd_train_target(need))
 		btn.name = "train_for_%d" % reg.index
 		_sheet_box.add_child(btn)
+
+
+# --- diplomacy ----------------------------------------------------------------
+
+func _diplomacy_sheet() -> void:
+	var sim = Game.sim
+	_sheet_title("Diplomacy")
+	var any := false
+	for civ_name in sim.civs:
+		if sim.civ_absorbed(civ_name):
+			continue
+		any = true
+		var civ: Dictionary = sim.civs[civ_name]
+		var color: Color = Look.OWNER_COLORS.get(civ_name, Look.TEXT)
+		var left := 0
+		for i in range(civ.first, civ.last + 1):
+			if not sim.owns(i):
+				left += 1
+		_sheet_box.add_child(Look.label("%s · %d regions left · size %s" % [civ_name, left, Look.num(sim.civ_size(civ_name))], Look.FONT_SIZE, color))
+		if civ.trade:
+			_sheet_box.add_child(Look.label("Trade partner: market fee -%d%%, talks %d%% faster" % [
+				roundi(sim.b.num("trade_fee_cut_per_partner") * 100), roundi(sim.b.num("trade_relations_cut") * 100)], Look.FONT_SMALL, Look.ACCENT))
+		else:
+			var tb := _row_button(null, "Sign trade rights", "Market fee -%d%% · annexation talks %d%% faster" % [
+				roundi(sim.b.num("trade_fee_cut_per_partner") * 100), roundi(sim.b.num("trade_relations_cut") * 100)],
+				Look.cost({"gold": sim.b.num("trade_signing_fee")}), func(): Game.cmd_sign_trade(civ_name))
+			tb.name = "trade_" + civ_name.split(" ")[0].to_lower()
+			_sheet_box.add_child(tb)
+		for i in range(civ.first, civ.last + 1):
+			if sim.owns(i):
+				continue
+			var reg: Dictionary = sim.region(i)
+			var talk: Dictionary = {}
+			for a in sim.annexes:
+				if a.region == i:
+					talk = a
+			var sub := ""
+			if talk.is_empty():
+				sub = "Talks %d min · then %s gold" % [roundi(sim.relations_hours(i) * 60.0), Look.num(sim.annex_gold(i))]
+			else:
+				var mins := maxf(0.0, talk.ends_at - sim.hours) * 60.0
+				sub = ("Talks %d min left" % ceili(mins) if mins > 0.0 else "Talks done") + (" · gold paid" if talk.paid else " · waiting for gold")
+			var blocker: String = sim.annex_blocker(i)
+			var idx: int = i
+			var ab := _row_button(null, "Annex %s" % reg.name, sub, "" if blocker == "" else blocker,
+				func(): Game.cmd_annex(idx), blocker != "")
+			ab.name = "annex_%d" % i
+			_sheet_box.add_child(ab)
+	if not any:
+		_sheet_box.add_child(Look.label("Every civilization on the planet is yours.", Look.FONT_SMALL, Look.DIM))
+
+
+# --- market -------------------------------------------------------------------
+
+const TRADE_LOT := 100.0
+const TRADED := ["food", "metal", "fuel", "rations", "equipment"]
+
+
+func _market_sheet() -> void:
+	var sim = Game.sim
+	_sheet_title("Market")
+	var info := Look.label("You keep %d%% of every sale after the fee. Big trades move the price; it recovers %d%% an hour. %d%% of spare food sells by itself." % [
+		roundi(sim.sale_keep() * 100), roundi(sim.b.num("market_recovery_per_hr") * 100), roundi(sim.b.num("food_sell_share") * 100)], Look.FONT_SMALL, Look.DIM)
+	info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_sheet_box.add_child(info)
+	for r in TRADED:
+		var m: Dictionary = sim.market[r]
+		var flow: float = sim._food_flow() if r == "food" else 0.0
+		var price: float = sim.market_price(r, flow)
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 4)
+		row.add_child(Icon.make(Look.RESOURCE_COLORS[r], r.left(1).to_upper(), 1))
+		var col := VBoxContainer.new()
+		col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		col.add_theme_constant_override("separation", 0)
+		col.add_child(Look.label("%s %.2f g (%+d%%)" % [r.capitalize(), price, roundi((price / m.base - 1.0) * 100)]))
+		col.add_child(Look.label("have %s" % Look.num(sim.res[r]), Look.FONT_SMALL, Look.DIM))
+		row.add_child(col)
+		var sell_g: float = sim.quote_sell(r, TRADE_LOT)
+		var buy_g: float = sim.quote_buy(r, TRADE_LOT)
+		var sb := Button.new()
+		sb.name = "sell_" + r
+		sb.text = "Sell 100\n+%s g" % Look.num(sell_g)
+		sb.custom_minimum_size = Vector2(76, 36)
+		sb.disabled = sim.res[r] < TRADE_LOT
+		sb.pressed.connect(func(): Game.cmd_sell(r, TRADE_LOT))
+		row.add_child(sb)
+		var bb := Button.new()
+		bb.name = "buy_" + r
+		bb.text = "Buy 100\n-%s g" % Look.num(buy_g)
+		bb.custom_minimum_size = Vector2(76, 36)
+		bb.disabled = sim.res.gold < buy_g
+		bb.pressed.connect(func(): Game.cmd_buy(r, TRADE_LOT))
+		row.add_child(bb)
+		_sheet_box.add_child(row)
 
 
 # --- dev ----------------------------------------------------------------------

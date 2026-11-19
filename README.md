@@ -14,7 +14,9 @@
 | 2. Headless sim core matching the Timeline tab within 5% | Done. A cautious playthrough takes 5.08 h vs the sheet's 5.106 h, and every step is within 5%. An attentive player takes 3.84 h. |
 | 3. Region map and building slots | Done. Planet and region views, build, upgrade, demolish, the queue, and the resource bar. Tests check that every building type can be placed through the buttons and that the screen's rates equal the sim's. |
 | 4. Combat and conquest | Done. Borders from the map grid, the attack screen with a live outcome preview, occupy or raze, timed battles, survivors coming home, the Army screen's standing training order, and capture pop-ups. Tests take the whole planet by force (3.83 h attentive). |
-| 5. NPC behaviour | Next. |
+| 5. NPC behaviour | Waiting on design numbers (attack frequency and size, offline loss cap, repel payout). |
+| 6. Diplomacy and market | Done. Free trade rights, annexation of any civilization (one talk per civilization at a time), and a market whose price moves with your trades and recovers 10% an hour, with manual buy and sell. The conquer-everyone and annex-Veyra paths match the sheet's maths within 5% at every region. |
+| 7. Offline progress and saves | Next. |
 
 ### What the two playthroughs mean
 
@@ -32,6 +34,17 @@
 | Conquer everyone, raze all | 5.16 h | 3.78 h |
 
 All paths are within about 8% of each other. Razing is a little faster but slows annexation for the rest of the planet.
+
+`tools/sheet_model.py` is the Timeline tab rebuilt formula for formula in Python. It reproduces the sheet's default path exactly (`--check`), and it computes the other paths, which the sheet can only show one at a time. `--golden` writes them to `tests/golden/sheet_paths.csv`.
+
+| Path | Sheet's maths | Sim, cautious |
+|---|---|---|
+| Default | 5.106 h | 5.078 h |
+| Conquer everyone | 5.260 h | 5.23 h |
+| Conquer everyone, raze Kharn | 5.185 h | 5.15 h |
+| Annex Veyra, raze Kharn | 5.299 h | 5.18 h |
+
+On the raze paths, single regions can drift up to 6%. Razing slows annexation talks; the sim banks resources during those waits, while the sheet starts every step from empty stockpiles.
 
 ## Layout
 

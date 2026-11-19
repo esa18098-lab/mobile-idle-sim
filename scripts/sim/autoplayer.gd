@@ -36,6 +36,9 @@ func _init(p_sim, p_mode: Mode = Mode.STRICT, p_placement: Placement = Placement
 ## Plays regions 2..last in order. Returns the hour the last region became yours.
 func play() -> float:
 	var last_region: int = sim.regions.size()
+	for civ_name in sim.civs:
+		if sim.civs[civ_name].plan_trade:
+			sim.sign_trade(civ_name)
 	for idx in range(2, last_region + 1):
 		var step := {"region": idx, "name": sim.region(idx).name, "started": sim.hours}
 		_plan_economy(idx)
