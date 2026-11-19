@@ -60,6 +60,10 @@ func _run_all() -> void:
 	_finished("test_game_load_catches_up", test_game_load_catches_up())
 	_finished("test_storage_cap", test_storage_cap())
 	_finished("test_annex_payment_never_blocks_building", test_annex_payment_never_blocks_building(b))
+	_finished("test_npc_attacks", test_npc_attacks(b))
+	_finished("test_npc_offline", test_npc_offline(b))
+	_finished("test_npc_playthrough", test_npc_playthrough(b))
+	_finished("test_ui_raids", test_ui_raids())
 
 	print("\n%d passed, %d failed, %d skipped" % [_passed, _failed, _skipped])
 	quit(1 if _failed > 0 else 0)
@@ -498,6 +502,7 @@ const SaveSystem := preload("res://scripts/game/save_system.gd")
 ## A busy mid-game state: a battle under way, talks open, a queue, a training order.
 func _busy_sim(b):
 	var sim = Sim.new_home_planet(b)
+	sim.npc_attacks_enabled = false   # raids only launch while online, by design; this checks the economy
 	sim.attack(2, 20, "Occupy")
 	sim.sign_trade("Veyra Compact")
 	sim.start_annex(5)
@@ -618,6 +623,137 @@ func test_annex_payment_never_blocks_building(b) -> bool:
 	return true
 
 
+# --- milestone 5: NPC behaviour -------------------------------------------------
+
+## A sim one step into the game: Rustfield and Highmoor are yours, so Kharn's
+## Ironridge (and Veyra's Saltflats) border you.
+func _frontier_sim(b):
+	var sim = Sim.new_home_planet(b)
+	for idx in [2, 4]:
+		sim.region(idx).owner = Sim.PLAYER
+		sim.region(idx).garrison = 3.0
+	sim._rates_dirty = true
+	return sim
+
+
+func _force_raid(sim) -> Dictionary:
+	sim.next_npc_attack_at = sim.hours
+	sim.advance(Sim.TICK_HOURS)
+	return sim.npc_raids[-1] if not sim.npc_raids.is_empty() else {}
+
+
+func test_npc_attacks(b) -> bool:
+	var sim = _frontier_sim(b)
+	var raid := _force_raid(sim)
+	_check("raid: launched at a weakest border region, never the capital", not raid.is_empty() and raid.target != 1)
+	var src_before: float = Combat.region_garrison(raid.from, b)
+	_check_close("raid: sends the share of the source garrison", raid.force, floorf(src_before * b.num("npc_attack_share")))
+	_check("raid: a warning comes first", raid.warning_ends_at > sim.hours)
+	sim.soldiers = 100.0
+	var gold: float = sim.res.gold
+	sim.advance(0.5)
+	_check("raid: standing order reinforces and holds", sim.owns(raid.target) and sim.npc_raids.is_empty())
+	_check("raid: repelling pays gold per attacker", sim.res.gold - gold >= raid.force * b.num("npc_repel_gold_per_attacker"))
+	_check("raid: their source region is thinner now", sim.region(raid.from).garrison < src_before)
+
+	var weak = _frontier_sim(b)
+	weak.soldiers = 0.0
+	var r2 := _force_raid(weak)
+	var target: int = r2.target
+	weak.queue_build("farm", target)
+	weak.advance(0.5)
+	_check("raid: an undefended region is lost", not weak.owns(target) and weak.region(target).owner == r2.civ)
+	_check("raid: its buildings and queued builds go with it", weak.buildings_in(target).is_empty() and weak.queue.is_empty())
+
+	var friendly = _frontier_sim(b)
+	for civ in friendly.civs:
+		friendly.sign_trade(civ)
+	_check("raid: trade partners don't attack", _force_raid(friendly).is_empty())
+	var talks = _frontier_sim(b)
+	talks.start_annex(3)
+	talks.start_annex(5)
+	_check("raid: civilizations in annexation talks don't attack", _force_raid(talks).is_empty())
+
+	var timed = _frontier_sim(b)
+	timed.soldiers = 1000.0
+	timed.advance(10.0)
+	var n: int = timed.events.filter(func(e): return e.kind == "raid_warning").size()
+	_check("raid: about one an hour of play (%d in 10 h)" % n, n >= 6 and n <= 16)
+	var j := JSON.stringify(timed.to_dict(), "", true, true)
+	var c = Sim.new_home_planet(b)
+	c.apply_dict(JSON.parse_string(j))
+	timed.advance(3.0)
+	c.advance(3.0)
+	_check("raid: saved games keep the same raid schedule", timed.events.size() == c.events.size())
+	return true
+
+
+## Milestone 5 "done when": closing the app mid-warning still resolves the
+## attack through your standing orders. And nothing new launches while away.
+func test_npc_offline(b) -> bool:
+	var sim = _frontier_sim(b)
+	var raid := _force_raid(sim)
+	sim.soldiers = 100.0
+	var events_before: int = sim.events.size()
+	sim.catch_up(6.0)
+	var away: Array = sim.events.slice(events_before)
+	_check("offline raid: the warning that was running resolves through the standing order", away.any(func(e): return e.kind == "raid_repelled"))
+	_check("offline raid: no new attacks launch while away", not away.any(func(e): return e.kind == "raid_warning"))
+
+	var two = _frontier_sim(b)
+	two.soldiers = 0.0
+	_force_raid(two)
+	_force_raid(two)
+	_check("offline cap: two raids on the way", two.npc_raids.size() == 2)
+	two.catch_up(1.0)
+	var lost: int = two.events.filter(func(e): return e.kind == "raid_lost").size()
+	_check("offline cap: at most %d region lost per absence (lost %d)" % [int(b.num("npc_offline_loss_cap")), lost], lost == int(b.num("npc_offline_loss_cap")))
+	return true
+
+
+## The default path with raids on: what they cost an attentive player.
+func test_npc_playthrough(b) -> bool:
+	var sim = Sim.new_home_planet(b)
+	var hrs: float = AutoPlayer.new(sim, AutoPlayer.Mode.EAGER, AutoPlayer.Placement.FIRST_FREE, true).play()
+	var kinds := {}
+	for e in sim.events:
+		kinds[e.kind] = kinds.get(e.kind, 0) + 1
+	print("  info  attentive play with raids: %.2f h, %d attacks, %d repelled, %d lost" % [hrs, kinds.get("raid_warning", 0), kinds.get("raid_repelled", 0), kinds.get("raid_lost", 0)])
+	_check("raids: the planet still falls under the 6 h cap", sim.regions.all(func(r): return r.owner == Sim.PLAYER) and hrs <= 6.0)
+	return true
+
+
+func test_ui_raids() -> bool:
+	var game := _game()
+	var main := _main_screen()
+	var sim = game.sim
+	for idx in [2, 4]:
+		sim.region(idx).owner = Sim.PLAYER
+		sim.region(idx).garrison = 3.0
+	sim._rates_dirty = true
+	sim.next_npc_attack_at = sim.hours
+	game.advance_seconds(1)
+	main._process(1.0)
+	_check("ui raid: a warning banner appears", main._raid_banner.get_child_count() == 1)
+	var raid: Dictionary = sim.npc_raids[0]
+	main._raid_banner.get_child(0).pressed.emit()
+	_check("ui raid: tapping it opens the region under attack", main.view.has_signal("move_soldiers") and main.view.region_idx == raid.target)
+	_check("ui raid: the region shows the incoming force", main.view.has_node("incoming"))
+	var home: float = sim.soldiers
+	main.view.find_child("move_in", true, false).pressed.emit()
+	_check("ui raid: In 10 moves soldiers from home into the garrison", sim.soldiers < home and sim.region(raid.target).garrison > 3.0)
+	main._open_sheet(main._army_sheet)
+	main._sheet_box.get_node("auto_reinforce").pressed.emit()
+	_check("ui raid: the Army sheet switches auto-reinforce off", not sim.auto_reinforce)
+	game.cmd_auto_reinforce(true)
+	main.close_sheet()
+	game.advance_seconds(1800)
+	main._process(1.0)
+	_check("ui raid: the banner clears when it's over", main._raid_banner.get_child_count() == 0)
+	main.queue_free()
+	return true
+
+
 func test_storage_cap() -> bool:
 	var capped := BalanceData.new()
 	capped.load_dir()
@@ -625,7 +761,12 @@ func test_storage_cap() -> bool:
 	var sim = Sim.new_home_planet(capped)
 	sim.catch_up(10.0)
 	_check_close("storage: metal stops at 2 h of production", sim.res.metal, sim.rates().metal * 2.0, 1e-6)
-	_check("storage: off when the sheet has no cap", is_inf(Sim.new_home_planet(root.get_node("Balance").data).storage_cap("metal")))
+	var real = Sim.new_home_planet(root.get_node("Balance").data)
+	_check_close("storage: the sheet's cap is 8 h of metal", real.storage_cap("metal"), real.rates().metal * 8.0)
+	real.res.metal = real.storage_cap("metal") * 3.0
+	var over: float = real.res.metal
+	real.advance(0.1)
+	_check("storage: a full stockpile stops filling but keeps what it has", is_equal_approx(real.res.metal, over))
 	return true
 
 

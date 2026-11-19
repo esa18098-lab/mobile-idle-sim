@@ -31,4 +31,23 @@ func _initialize() -> void:
 			paths[name].call(sim)
 			out.append(AutoPlayer.new(sim, mode).play())
 		print("%-46s %8.2fh %8.2fh" % [name, out[0], out[1]])
+
+	# NPC raids on the default path, over 20 random seeds.
+	print("\nraids on the default path (20 seeds)")
+	for mode in [AutoPlayer.Mode.STRICT, AutoPlayer.Mode.EAGER]:
+		var times: Array = []
+		var counts := {"raid_warning": 0, "raid_repelled": 0, "raid_lost": 0}
+		for seed in range(1, 21):
+			var sim = Sim.new_home_planet(b)
+			sim.rng.seed = seed
+			sim._schedule_next_npc_attack()
+			times.append(AutoPlayer.new(sim, mode, AutoPlayer.Placement.FIRST_FREE, true).play())
+			for e in sim.events:
+				if counts.has(e.kind):
+					counts[e.kind] += 1
+		times.sort()
+		var mean: float = times.reduce(func(a, x): return a + x, 0.0) / times.size()
+		print("  %-9s mean %.2fh  range %.2f-%.2fh  per run: %.1f attacks, %.1f repelled, %.1f lost" % [
+			AutoPlayer.Mode.keys()[mode].to_lower(), mean, times[0], times[-1],
+			counts.raid_warning / 20.0, counts.raid_repelled / 20.0, counts.raid_lost / 20.0])
 	quit()

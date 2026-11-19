@@ -80,6 +80,21 @@ func _initialize() -> void:
 			SaveSystem.write(Game.sim.to_dict(), Game.now_unix() - 3.0 * 3600.0, Game.save_path)
 			Game.load_game()
 			DirAccess.remove_absolute(Game.save_path)],
+		["raid_banner", func():
+			_main.close_sheet()
+			Game.new_game()
+			for idx in [2, 4]:
+				Game.sim.region(idx).owner = "You"
+				Game.sim.region(idx).garrison = 3.0
+			Game.sim.soldiers = 12.0
+			Game.sim._rates_dirty = true
+			Game.sim.next_npc_attack_at = Game.sim.hours
+			Game.advance_seconds(1)
+			_main.show_planet()
+			_main._process(1.0)],
+		["raid_region", func():
+			_main.show_region(Game.sim.npc_raids[0].target)
+			_main._process(1.0)],
 	]
 
 

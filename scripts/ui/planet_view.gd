@@ -77,11 +77,22 @@ func refresh_live() -> void:
 		var l: Label = _battle_labels[idx]
 		if not is_instance_valid(l):
 			continue
-		if battle.is_empty():
+		var raid: Dictionary = {}
+		for r in sim.npc_raids:
+			if r.target == idx:
+				raid = r
+		if not raid.is_empty():
+			var t: float = raid.warning_ends_at if raid.battle_ends_at < 0.0 else raid.battle_ends_at
+			var left2 := int(maxf(0.0, t - sim.hours) * 3600.0)
+			l.text = "Under attack %d:%02d" % [left2 / 60, left2 % 60]
+			l.add_theme_color_override("font_color", Look.BAD)
+		elif battle.is_empty():
 			l.text = ""
 		else:
 			var left := int(maxf(0.0, battle.ends_at - sim.hours) * 3600.0)
 			l.text = "Battle %d:%02d" % [left / 60, left % 60]
+			l.add_theme_color_override("font_color", Look.ACCENT)
+		l.visible = l.text != ""
 
 
 func _region_tile(reg: Dictionary) -> Button:
@@ -113,6 +124,8 @@ func _region_tile(reg: Dictionary) -> Button:
 	box.add_child(Look.label("You" if mine else reg.owner.split(" ")[0], Look.FONT_SMALL, border))
 	box.add_child(Look.label(reg.terrain, Look.FONT_SMALL, Look.TEXT if mine else Look.DIM))
 	var battle_l := Look.label("", Look.FONT_SIZE, Look.ACCENT)
+	battle_l.add_theme_stylebox_override("normal", Look.flat_box(Color(0.05, 0.06, 0.08, 0.85), Color(0, 0, 0, 0), 0, 1))
+	battle_l.visible = false
 	box.add_child(battle_l)
 	_battle_labels[reg.index] = battle_l
 	var grow := Control.new()

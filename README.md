@@ -14,7 +14,7 @@
 | 2. Headless sim core matching the Timeline tab within 5% | Done. A cautious playthrough takes 5.08 h vs the sheet's 5.106 h, and every step is within 5%. An attentive player takes 3.84 h. |
 | 3. Region map and building slots | Done. Planet and region views, build, upgrade, demolish, the queue, and the resource bar. Tests check that every building type can be placed through the buttons and that the screen's rates equal the sim's. |
 | 4. Combat and conquest | Done. Borders from the map grid, the attack screen with a live outcome preview, occupy or raze, timed battles, survivors coming home, the Army screen's standing training order, and capture pop-ups. Tests take the whole planet by force (3.83 h attentive). |
-| 5. NPC behaviour | Waiting on design numbers (attack frequency and size, offline loss cap, repel payout). |
+| 5. NPC behaviour | Done. Attacks launch only while the app is open, about once an hour of play, from an enemy region on your border at your weakest region (never the capital), sending half that region's garrison. A warning comes first. Standing order: soldiers at home auto-reinforce. Repelling pays 0.75 gold per attacker; losing gives the region and its buildings back. At most one region lost per absence. Trade partners and civilizations in talks don't attack. |
 | 6. Diplomacy and market | Done. Free trade rights, annexation of any civilization (one talk per civilization at a time), and a market whose price moves with your trades and recovers 10% an hour, with manual buy and sell. The conquer-everyone and annex-Veyra paths match the sheet's maths within 5% at every region. |
 | 7. Offline progress and saves | Done. Saves are JSON plus a checksum, written safely and loaded at start, on resume and every 30 s. Offline catch-up uses 60 s steps that stop at battle and annexation ends: 8 h away matches 8 h live within 1%, and a week catches up in about 0.1 s. A "while you were away" summary, notification timing (delivery needs an Android plugin), and the server stubs. Storage caps are built but off until the sheet has a `storage_cap_hours` key. |
 | 8. Automation | Needs a design pass: what each planet focus does. |
@@ -33,6 +33,15 @@
 | Conquer everyone, raze Kharn | 5.15 h | 3.69 h |
 | Annex Veyra, raze Kharn | 5.18 h | 3.99 h |
 | Conquer everyone, raze all | 5.16 h | 3.78 h |
+
+### NPC raids (`tools/paths.gd`, 20 seeds, default path)
+
+| | No raids | With raids |
+|---|---|---|
+| Cautious | 5.07 h | 4.48 h (about 3 attacks, 1.4 regions lost and retaken) |
+| Attentive | 3.84 h | 3.50 h (about 2 attacks, all repelled) |
+
+Raids make the planet faster. A repelled attack has thinned the source region's garrison, so it's cheaper to take next. Without that thinning, raids cost attentive players nothing and cautious players about 13%. The repel payout barely matters (about 0.1 h).
 
 All paths are within about 8% of each other. Razing is a little faster but slows annexation for the rest of the planet.
 

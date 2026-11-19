@@ -39,6 +39,16 @@ var market := {}              ## resource -> {base, supply, demand, sens, recent
 
 const MAP_PATH := "res://data/maps/home_planet.csv"
 
+# --- NPC attacks ---------------------------------------------------------------
+var npc_attacks_enabled := true   ## balance checks against the sheet turn this off (the sheet has no raids)
+var auto_reinforce := true        ## standing order: soldiers at home move in when a warning ends
+var npc_raids: Array = []         ## {civ, from, target, force, warning_ends_at, battle_ends_at}
+var next_npc_attack_at := -1.0    ## game hours; offline time doesn't count toward it
+var online := true                ## attacks only launch while the app is open
+var offline_losses := 0           ## regions lost during the current absence
+var rng := RandomNumberGenerator.new()
+const RNG_SEED := 20261118
+
 # --- derived, cached ---------------------------------------------------------
 var _rates_dirty := true
 var _rates := {}
@@ -62,6 +72,8 @@ func _setup(data: BalanceData) -> void:
 	_load_map()
 	_load_market()
 	soldiers = b.num("starting_soldiers")
+	rng.seed = RNG_SEED
+	_schedule_next_npc_attack()
 	# The capital starts built out with the first build-plan row, all at level 1.
 	var first_plan := plan_for_region(2)
 	for type in first_plan.counts:
@@ -353,12 +365,19 @@ func _food_flow() -> float:
 	return maxf(0.0, net) * b.num("food_sell_share")
 
 
+var _partners_cache := -1
+
+## Cached with the production rates: both only change when trade rights are
+## signed or a region changes hands, and those mark the rates dirty.
 func active_trade_partners() -> int:
+	if not _rates_dirty and _partners_cache >= 0:
+		return _partners_cache
 	var n := 0
 	for name in civs:
 		var c: Dictionary = civs[name]
 		if c.trade and not civ_absorbed(name):
 			n += 1
+	_partners_cache = n
 	return n
 
 
@@ -505,6 +524,7 @@ func sign_trade(civ_name: String) -> bool:
 		return false
 	res.gold -= b.num("trade_signing_fee")
 	civs[civ_name].trade = true
+	_rates_dirty = true
 	_log("Signed trade rights with %s" % civ_name, "diplomacy")
 	return true
 
@@ -590,12 +610,17 @@ const CATCH_UP_STEP_HOURS := 60.0 / 3600.0
 
 func catch_up(dt_hours: float) -> void:
 	var end := hours + dt_hours
+	online = false
+	offline_losses = 0
+	if next_npc_attack_at >= 0.0:
+		next_npc_attack_at += dt_hours   # time away doesn't bring the next attack closer
 	while hours < end - 1e-9:
 		var step := minf(CATCH_UP_STEP_HOURS, end - hours)
 		var due := _next_event_hours()
 		if due > hours + 1e-9:
 			step = minf(step, due - hours)
 		_tick(step)
+	online = true
 
 
 ## What a player would want a phone notification for, and when (game hours).
@@ -605,12 +630,16 @@ func upcoming_notifications() -> Array:
 		out.append({"at": battle.ends_at, "text": "The battle for %s is over." % region(battle.region).name})
 	for a in annexes:
 		out.append({"at": a.ends_at, "text": "Talks with %s are done." % region(a.region).name + ("" if a.paid else " They still need gold.")})
+	for raid in npc_raids:
+		out.append({"at": raid.warning_ends_at, "text": "%s attack %s now." % [raid.civ, region(raid.target).name]})
 	out.sort_custom(func(x, y): return x.at < y.at)
 	return out
 
 
 func _next_event_hours() -> float:
 	var t := INF
+	for raid in npc_raids:
+		t = minf(t, raid.warning_ends_at if raid.battle_ends_at < 0.0 else raid.battle_ends_at)
 	for battle in battles:
 		t = minf(t, battle.ends_at)
 	for a in annexes:
@@ -620,6 +649,8 @@ func _next_event_hours() -> float:
 
 func _tick(dt: float) -> void:
 	var r := rates()
+	var caps := _storage_caps()
+	var before: Dictionary = res.duplicate()
 
 	# Raw production. Citizens eat as they are produced.
 	var penalty := raze_output_mult()
@@ -635,7 +666,7 @@ func _tick(dt: float) -> void:
 	res.metal += r.metal * dt
 	res.fuel += r.fuel * dt
 
-	_apply_storage_cap()
+	_apply_storage_cap(before, caps)
 
 	var fade := pow(1.0 - b.num("market_recovery_per_hr"), dt)
 	for k in market:
@@ -649,20 +680,44 @@ func _tick(dt: float) -> void:
 	_resolve_events()
 
 
-## Stockpiles hold at most `storage_cap_hours` of current production. Off until
-## the sheet has that key (a design number still to decide).
+## Stockpiles hold `storage_cap_hours` of current production. A full stockpile
+## stops filling; it never loses what it already holds.
+const CAPPED: PackedStringArray = ["citizens", "food", "metal", "fuel", "gold"]
+
 func storage_cap(res_name: String) -> float:
-	if not b.has("storage_cap_hours"):
+	if not b.has("storage_cap_hours") or not (res_name in CAPPED):
 		return INF
-	var rate: float = display_rates().get(res_name, 0.0)
-	return maxf(0.0, rate) * b.num("storage_cap_hours")
+	var r := rates()
+	var per_hr := 0.0
+	match res_name:
+		"citizens": per_hr = r.citizens * raze_output_mult()
+		"food": per_hr = r.food
+		"metal": per_hr = r.metal
+		"fuel": per_hr = r.fuel
+		"gold": per_hr = display_rates().gold
+	return maxf(0.0, per_hr) * b.num("storage_cap_hours")
 
 
-func _apply_storage_cap() -> void:
-	if not b.has("storage_cap_hours"):
-		return
-	for k in ["citizens", "food", "metal", "fuel", "gold"]:
-		res[k] = minf(res[k], maxf(storage_cap(k), 0.0))
+var _caps_cache := {}
+var _caps_penalty := -1
+
+## Caps only change when production, a raze penalty or trade partners change.
+func _storage_caps() -> Dictionary:
+	var was_dirty := _rates_dirty
+	rates()
+	var key := 1 if raze_penalty else 0
+	if was_dirty or key != _caps_penalty or _caps_cache.is_empty():
+		_caps_penalty = key
+		_caps_cache = {}
+		for k in CAPPED:
+			_caps_cache[k] = storage_cap(k)
+	return _caps_cache
+
+
+func _apply_storage_cap(before: Dictionary, caps: Dictionary) -> void:
+	for k in CAPPED:
+		if res[k] > caps[k]:
+			res[k] = maxf(before[k], caps[k])
 
 
 ## Gold promised to annexations that haven't been paid yet.
@@ -783,6 +838,13 @@ func _soldiers_in_battle_returning() -> float:
 
 
 func _resolve_events() -> void:
+	_maybe_launch_npc_attack()
+	for raid in npc_raids.duplicate():
+		if raid.battle_ends_at < 0.0 and hours + 1e-9 >= raid.warning_ends_at:
+			_raid_warning_over(raid)
+		if raid.battle_ends_at >= 0.0 and hours + 1e-9 >= raid.battle_ends_at:
+			npc_raids.erase(raid)
+			_finish_raid(raid)
 	for battle in battles.duplicate():
 		if hours + 1e-9 >= battle.ends_at:
 			battles.erase(battle)
@@ -834,6 +896,125 @@ func _finish_annex(region_idx: int) -> void:
 
 
 # =============================================================================
+# NPC attacks. Only launched while the app is open. They come from an enemy
+# region on your border, aim at your weakest bordering region (never the
+# capital), and give a warning first. Trade partners and civilizations in
+# annexation talks don't attack.
+# =============================================================================
+
+func _schedule_next_npc_attack() -> void:
+	var gap := b.num("npc_attack_interval_min") * rng.randf_range(0.5, 1.5) / 60.0
+	next_npc_attack_at = hours + gap
+
+
+func _civ_hostile(civ_name: String) -> bool:
+	if civs[civ_name].trade:
+		return false
+	return not annexes.any(func(a): return region(a.region).civ == civ_name)
+
+
+## The attack an NPC would launch right now: {from, target, force} or {}.
+func npc_attack_choice() -> Dictionary:
+	var best_target := -1
+	for reg in regions:
+		if reg.owner != PLAYER or reg.index == 1 or npc_raids.any(func(r): return r.target == reg.index):
+			continue
+		var has_source := false
+		for n in neighbours(reg.index):
+			var src := region(n)
+			if src.owner != PLAYER and _civ_hostile(src.owner) and battle_at(n).is_empty() and src.garrison >= 2.0:
+				has_source = true
+		if has_source and (best_target < 0 or reg.garrison < region(best_target).garrison):
+			best_target = reg.index
+	if best_target < 0:
+		return {}
+	var best_source := -1
+	for n in neighbours(best_target):
+		var src := region(n)
+		if src.owner != PLAYER and _civ_hostile(src.owner) and battle_at(n).is_empty() and src.garrison >= 2.0:
+			if best_source < 0 or src.garrison > region(best_source).garrison:
+				best_source = n
+	return {"from": best_source, "target": best_target, "force": floorf(region(best_source).garrison * b.num("npc_attack_share"))}
+
+
+func _maybe_launch_npc_attack() -> void:
+	if not npc_attacks_enabled or not online or hours < next_npc_attack_at:
+		return
+	_schedule_next_npc_attack()
+	var c := npc_attack_choice()
+	if c.is_empty() or c.force < 1.0:
+		return
+	var src := region(c.from)
+	src.garrison -= c.force
+	var warning_min := b.num("warning_minutes_per_region") * pow(c.force / 100.0, b.num("warning_fleet_exponent"))
+	npc_raids.append({"civ": src.owner, "from": c.from, "target": c.target, "force": c.force,
+		"warning_ends_at": hours + warning_min / 60.0, "battle_ends_at": -1.0})
+	_log("%s march on %s with %d: %.1f min to prepare" % [src.owner, region(c.target).name, c.force, warning_min], "raid_warning", c.target)
+
+
+## Soldiers the standing order would move in to hold against `force`.
+func reinforcement_for(raid: Dictionary) -> int:
+	var reg := region(raid.target)
+	var hold := ceili(raid.force * b.num("attack_margin") / (b.num("def_advantage") * reg.defense_mod) - 1e-9)
+	return clampi(hold - floori(reg.garrison), 0, floori(soldiers + 1e-6))
+
+
+func _raid_warning_over(raid: Dictionary) -> void:
+	var reg := region(raid.target)
+	if reg.owner != PLAYER:
+		npc_raids.erase(raid)
+		return
+	if auto_reinforce:
+		var n := reinforcement_for(raid)
+		soldiers -= n
+		reg.garrison += n
+	var dfn := Combat.defense_power(reg.garrison, reg.defense_mod, b)
+	var minutes := Combat.battle_minutes(raid.force, reg.garrison, raid.force, dfn, b)
+	raid.battle_ends_at = hours + minutes / 60.0
+
+
+func _finish_raid(raid: Dictionary) -> void:
+	var reg := region(raid.target)
+	var dfn := Combat.defense_power(reg.garrison, reg.defense_mod, b)
+	var share := Combat.survivor_share(raid.force, dfn)
+	if dfn >= raid.force:
+		reg.garrison *= share
+		var pay: float = raid.force * b.num("npc_repel_gold_per_attacker")
+		res.gold += pay
+		_log("Repelled %s at %s: %d attackers fell, +%.0f gold" % [raid.civ, reg.name, raid.force, pay], "raid_repelled", raid.target)
+		return
+	if not online and offline_losses >= int(b.num("npc_offline_loss_cap")):
+		region(raid.from).garrison += raid.force * share
+		_log("%s broke off their attack on %s (you were away)" % [raid.civ, reg.name], "raid_repelled", raid.target)
+		return
+	offline_losses += 0 if online else 1
+	reg.owner = raid.civ
+	reg.garrison = raid.force * share
+	reg.kept_credits = 0
+	buildings = buildings.filter(func(bd): return bd.region != raid.target)
+	queue = queue.filter(func(q): return not (q.kind == "build" and q.region == raid.target))
+	_rates_dirty = true
+	_log("Lost %s to %s; its buildings are theirs now" % [reg.name, raid.civ], "raid_lost", raid.target)
+
+
+## Move soldiers from home into one of your regions, or back out.
+func reinforce(region_idx: int, n: int) -> bool:
+	if not owns(region_idx) or n <= 0 or n > floori(soldiers + 1e-6):
+		return false
+	soldiers -= n
+	region(region_idx).garrison += n
+	return true
+
+
+func withdraw(region_idx: int, n: int) -> bool:
+	if not owns(region_idx) or n <= 0 or n > floori(region(region_idx).garrison + 1e-6):
+		return false
+	region(region_idx).garrison -= n
+	soldiers += n
+	return true
+
+
+# =============================================================================
 # Saving: plain data only. Static data (terrain, slots, civ names) comes from
 # the balance CSVs at load, so a balance change applies to existing saves.
 # =============================================================================
@@ -857,6 +1038,8 @@ func to_dict() -> Dictionary:
 		"civs": civ_state, "queue": queue.duplicate(true), "battles": battles.duplicate(true),
 		"annexes": annexes.duplicate(true), "events": events.slice(maxi(0, events.size() - 50)),
 		"next_id": next_id, "razed_count": razed_count, "raze_penalty": raze_penalty, "market_recent": recent,
+		"npc_raids": npc_raids.duplicate(true), "next_npc_attack_at": next_npc_attack_at,
+		"auto_reinforce": auto_reinforce, "rng_state": str(rng.state), "npc_attacks_enabled": npc_attacks_enabled,
 	}
 
 
@@ -901,6 +1084,15 @@ func apply_dict(d: Dictionary) -> void:
 	for k in d.market_recent:
 		if market.has(k):
 			market[k].recent = float(d.market_recent[k])
+	npc_raids = []
+	for r in d.get("npc_raids", []):
+		npc_raids.append({"civ": r.civ, "from": int(r.from), "target": int(r.target), "force": float(r.force),
+			"warning_ends_at": float(r.warning_ends_at), "battle_ends_at": float(r.battle_ends_at)})
+	next_npc_attack_at = float(d.get("next_npc_attack_at", next_npc_attack_at))
+	auto_reinforce = bool(d.get("auto_reinforce", true))
+	npc_attacks_enabled = bool(d.get("npc_attacks_enabled", true))
+	if d.has("rng_state"):
+		rng.state = int(d.rng_state)
 	_rates_dirty = true
 
 

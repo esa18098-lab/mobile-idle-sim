@@ -11,6 +11,7 @@ signal empty_slot_tapped(region_idx: int)
 signal building_tapped(building_id: int)
 signal attack_tapped(region_idx: int)
 signal annex_tapped(region_idx: int)
+signal move_soldiers(region_idx: int, n: int)   ## positive: in from home, negative: back home
 
 const COLUMNS := 4
 
@@ -18,6 +19,7 @@ var region_idx := 1
 var _battle_label: Label
 var _battle_bar: ColorRect
 var _battle_track: Control
+var _raid_label: Label
 
 
 func _ready() -> void:
@@ -99,6 +101,8 @@ func rebuild() -> void:
 		t.name = "empty_%d" % i
 		grid.add_child(t)
 
+	_add_garrison_row(reg)
+
 	if reg.kept_credits > 0:
 		var kept := Look.label("%d captured buildings fit your plan: placing them here is free, at level %d." % [reg.kept_credits, reg.kept_level], Look.FONT_SMALL, Look.ACCENT)
 		kept.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -107,6 +111,33 @@ func rebuild() -> void:
 	summary.name = "summary"
 	summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	add_child(summary)
+
+
+func _add_garrison_row(reg: Dictionary) -> void:
+	var sim = Game.sim
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	var info := Look.label("Garrison %s" % Look.num(reg.garrison), Look.FONT_SIZE)
+	info.name = "garrison"
+	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(info)
+	for pair in [["In 10", 10], ["Out 10", -10]]:
+		var bt := Button.new()
+		bt.name = "move_in" if pair[1] > 0 else "move_out"
+		bt.text = pair[0]
+		bt.custom_minimum_size = Vector2(64, 32)
+		var n: int = pair[1]
+		bt.disabled = (n > 0 and sim.soldiers < 1.0) or (n < 0 and reg.garrison < 1.0)
+		bt.pressed.connect(func(): move_soldiers.emit(region_idx, n))
+		row.add_child(bt)
+	add_child(row)
+	for raid in sim.npc_raids:
+		if raid.target == region_idx:
+			_raid_label = Look.label("", Look.FONT_SIZE, Look.BAD)
+			_raid_label.name = "incoming"
+			_raid_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			add_child(_raid_label)
+			refresh_live()
 
 
 func _add_battle_bar() -> void:
@@ -125,6 +156,10 @@ func _add_battle_bar() -> void:
 
 ## Called a few times a second: moves the battle bar without a full rebuild.
 func refresh_live() -> void:
+	if _raid_label != null and is_instance_valid(_raid_label):
+		for raid in Game.sim.npc_raids:
+			if raid.target == region_idx:
+				_raid_label.text = _raid_text(raid)
 	if _battle_label == null or not is_instance_valid(_battle_label):
 		return
 	var sim = Game.sim
@@ -136,6 +171,17 @@ func refresh_live() -> void:
 	var left := int(maxf(0.0, battle.ends_at - sim.hours) * 3600.0)
 	_battle_label.text = "Battle: %d attacking · %s left · then %s" % [battle.soldiers, _clock(left), battle.on_capture.to_lower()]
 	_battle_bar.size = Vector2(_battle_track.size.x * done, 8)
+
+
+static func _raid_text(raid: Dictionary) -> String:
+	var sim = Game.sim
+	var reg: Dictionary = sim.region(raid.target)
+	if raid.battle_ends_at < 0.0:
+		var left := int(maxf(0.0, raid.warning_ends_at - sim.hours) * 3600.0)
+		var auto := (" +%d auto" % sim.reinforcement_for(raid)) if sim.auto_reinforce else " (auto off)"
+		return "%s attack in %s: %d vs your %s%s" % [raid.civ.split(" ")[0], _clock(left), raid.force, Look.num(reg.garrison), auto]
+	var left2 := int(maxf(0.0, raid.battle_ends_at - sim.hours) * 3600.0)
+	return "Defending against %s: %d vs %s, %s left" % [raid.civ.split(" ")[0], raid.force, Look.num(reg.garrison), _clock(left2)]
 
 
 static func _clock(secs: int) -> String:

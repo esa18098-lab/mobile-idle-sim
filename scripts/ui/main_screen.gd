@@ -27,6 +27,7 @@ var _toast_box: VBoxContainer
 var _seen_events := 0
 var _attack_count := 0
 var _attack_mode := "Occupy"
+var _raid_banner: VBoxContainer
 
 
 func _ready() -> void:
@@ -45,6 +46,9 @@ func _ready() -> void:
 
 	resource_bar = ResourceBar.new()
 	col.add_child(resource_bar)
+	_raid_banner = VBoxContainer.new()
+	_raid_banner.add_theme_constant_override("separation", 0)
+	col.add_child(_raid_banner)
 
 	_content = MarginContainer.new()
 	_content.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -54,9 +58,12 @@ func _ready() -> void:
 
 	col.add_child(_bottom_bar())
 	_build_sheet_layer()
+	# Pop-ups stack just above the bottom bar, clear of the resource bar and raid lines.
 	_toast_box = VBoxContainer.new()
-	_toast_box.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE, Control.PRESET_MODE_MINSIZE, 6)
-	_toast_box.position.y = 56
+	_toast_box.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE, Control.PRESET_MODE_MINSIZE, 6)
+	_toast_box.offset_bottom = -56
+	_toast_box.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_toast_box.alignment = BoxContainer.ALIGNMENT_END
 	_toast_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_toast_box)
 	_seen_events = Game.sim.events.size()
@@ -75,6 +82,7 @@ func _process(delta: float) -> void:
 	resource_bar.refresh()
 	_refresh_bottom()
 	_show_new_events()
+	_refresh_raid_banner()
 	if view and view.has_method("refresh_live"):
 		view.refresh_live()
 	if _sheet_layer.visible and _sheet_builder.is_valid() and _sheet_builder.get_method() in [&"_queue_sheet", &"_army_sheet", &"_diplomacy_sheet", &"_market_sheet"]:
@@ -116,6 +124,11 @@ func show_region(idx: int) -> void:
 	rv.building_tapped.connect(open_building_sheet)
 	rv.attack_tapped.connect(open_attack_sheet)
 	rv.annex_tapped.connect(func(_idx): _open_sheet(_diplomacy_sheet))
+	rv.move_soldiers.connect(func(idx, n):
+		if n > 0:
+			Game.cmd_reinforce(idx, mini(n, floori(Game.sim.soldiers + 1e-6)))
+		else:
+			Game.cmd_withdraw(idx, mini(-n, floori(Game.sim.region(idx).garrison + 1e-6))))
 
 
 func _set_view(v: Control) -> void:
@@ -238,8 +251,33 @@ func _show_new_events() -> void:
 	while _seen_events < events.size():
 		var e: Dictionary = events[_seen_events]
 		_seen_events += 1
-		if e.kind in ["captured", "battle_lost", "annexed"]:
-			toast(e.text, Look.BAD if e.kind == "battle_lost" else Look.ACCENT)
+		if e.kind in ["captured", "battle_lost", "annexed", "raid_warning", "raid_repelled", "raid_lost"]:
+			toast(e.text, Look.BAD if e.kind in ["battle_lost", "raid_warning", "raid_lost"] else Look.ACCENT)
+
+
+## One red line per incoming attack, under the resource bar. Tap to go there.
+func _refresh_raid_banner() -> void:
+	var raids: Array = Game.sim.npc_raids
+	while _raid_banner.get_child_count() > raids.size():
+		var c := _raid_banner.get_child(_raid_banner.get_child_count() - 1)
+		_raid_banner.remove_child(c)
+		c.queue_free()
+	while _raid_banner.get_child_count() < raids.size():
+		var bt := Button.new()
+		bt.custom_minimum_size = Vector2(0, 28)
+		bt.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		bt.add_theme_color_override("font_color", Look.BAD)
+		bt.add_theme_stylebox_override("normal", Look.flat_box(Color("#3a1d1a"), Look.BAD, 1, 4))
+		_raid_banner.add_child(bt)
+	for i in raids.size():
+		var raid: Dictionary = raids[i]
+		var bt: Button = _raid_banner.get_child(i)
+		bt.name = "raid_%d" % raid.target
+		bt.text = RegionView._raid_text(raid)
+		for conn in bt.pressed.get_connections():
+			bt.pressed.disconnect(conn.callable)
+		var target: int = raid.target
+		bt.pressed.connect(func(): show_region(target))
 
 
 func toast(text: String, color: Color = Look.ACCENT) -> void:
@@ -549,6 +587,11 @@ func _army_sheet() -> void:
 	info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_sheet_box.add_child(info)
 
+	var auto := _row_button(null, "Auto-reinforce: %s" % ("ON" if sim.auto_reinforce else "OFF"),
+		"When an attack's warning ends, soldiers at home move in to hold the region.", "tap to switch",
+		func(): Game.cmd_auto_reinforce(not sim.auto_reinforce))
+	auto.name = "auto_reinforce"
+	_sheet_box.add_child(auto)
 	_sheet_box.add_child(Look.label("Keep this many soldiers at home:", Look.FONT_SIZE))
 	var steps := HBoxContainer.new()
 	steps.add_theme_constant_override("separation", 4)

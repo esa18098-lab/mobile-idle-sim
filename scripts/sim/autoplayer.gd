@@ -27,8 +27,9 @@ var placement: Placement
 var steps: Array = []            ## per region: {region, name, method, started, ready, ended, bottleneck_note}
 
 
-func _init(p_sim, p_mode: Mode = Mode.STRICT, p_placement: Placement = Placement.FIRST_FREE) -> void:
+func _init(p_sim, p_mode: Mode = Mode.STRICT, p_placement: Placement = Placement.FIRST_FREE, raids := false) -> void:
 	sim = p_sim
+	sim.npc_attacks_enabled = raids   # the sheet has no raids; turn them on to see their cost
 	mode = p_mode
 	placement = p_placement
 
@@ -39,32 +40,45 @@ func play() -> float:
 	for civ_name in sim.civs:
 		if sim.civs[civ_name].plan_trade:
 			sim.sign_trade(civ_name)
-	for idx in range(2, last_region + 1):
+	var idx := 2
+	while idx <= last_region:
+		# Retake anything an NPC raid took back before moving on.
+		for back in range(2, idx):
+			if not sim.owns(back):
+				idx = back
+				break
 		var step := {"region": idx, "name": sim.region(idx).name, "started": sim.hours}
 		_plan_economy(idx)
 		var method: String = sim.civs[sim.region(idx).civ].method
 		step.method = method
-		if method == "Annex":
+		if method == "Annex" and sim.region(idx).owner == sim.region(idx).civ:
 			sim.start_annex(idx)
 			_wait(func(): return sim.owns(idx) and (mode == Mode.EAGER or sim.queue.is_empty()))
 			step.ready = sim.hours
 		else:
-			var need := Combat.soldiers_needed(sim.region(idx).garrison, sim.region(idx).defense_mod, sim.b)
+			step.method = "Conquer"
+			var need := _need(idx)
 			sim.set_train_target(need)
-			_wait(func(): return sim.soldiers + 1e-6 >= need and (mode == Mode.EAGER or sim.queue.is_empty()))
+			_wait(func(): return sim.soldiers + 1e-6 >= _need(idx) and (mode == Mode.EAGER or sim.queue.is_empty()))
 			step.ready = sim.hours
-			sim.attack(idx, need, sim.civs[sim.region(idx).civ].captured)
+			sim.attack(idx, _need(idx), sim.civs[sim.region(idx).civ].captured)
 			if mode == Mode.STRICT:
 				sim.set_train_target(0)   # the sheet trains nothing during a battle
 			if mode == Mode.EAGER and idx < last_region:
 				_prepare_next_during_battle(idx + 1)
-			_wait(func(): return sim.owns(idx))
+			_wait(func(): return sim.owns(idx) or sim.battle_at(idx).is_empty())
 		step.ended = sim.hours
-		steps.append(step)
+		if sim.owns(idx):
+			steps.append(step)
+			idx += 1
 		if sim.hours >= MAX_HOURS:
 			push_error("Autoplayer gave up at %.1f h" % sim.hours)
 			break
 	return sim.hours
+
+
+func _need(idx: int) -> int:
+	return Combat.soldiers_needed(sim.region(idx).garrison, sim.region(idx).defense_mod, sim.b)
 
 
 ## Eager only: start training for the next conquest (or talks for the next

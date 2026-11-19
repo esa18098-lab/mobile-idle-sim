@@ -182,6 +182,19 @@ func cmd_buy(res_name: String, qty: float) -> bool:
 	return ok
 
 
+func cmd_reinforce(region_idx: int, n: int) -> bool:
+	return _after(sim.reinforce(region_idx, n))
+
+
+func cmd_withdraw(region_idx: int, n: int) -> bool:
+	return _after(sim.withdraw(region_idx, n))
+
+
+func cmd_auto_reinforce(on: bool) -> void:
+	sim.auto_reinforce = on
+	_emit_changed()
+
+
 func cmd_train_target(n: int) -> void:
 	sim.set_train_target(maxi(0, n))
 	_emit_changed()
@@ -210,6 +223,13 @@ func dev_take_next_region() -> int:
 
 # --- internals ---------------------------------------------------------------
 
+func _garrisons() -> int:
+	var t := 0.0
+	for reg in sim.regions:
+		if reg.owner == Sim.PLAYER:
+			t += reg.garrison
+	return roundi(t)
+
 func _after(ok: bool) -> bool:
 	if ok:
 		# Paying can happen right away if the stockpile already covers it.
@@ -232,4 +252,4 @@ func _structure() -> String:
 	for reg in sim.regions:
 		if reg.owner == Sim.PLAYER:
 			owned += 1 << reg.index
-	return "%d|%d|%d|%d|%d|%d" % [sim.buildings.size(), levels, owned, sim.queue.size(), sim.battles.size(), int(sim.train_target)] + "|%d" % (sim.annexes.size() + sim.civs.values().filter(func(c): return c.trade).size() * 100)
+	return "%d|%d|%d|%d|%d|%d" % [sim.buildings.size(), levels, owned, sim.queue.size(), sim.battles.size(), int(sim.train_target)] + "|%d|%d|%d|%d" % [sim.npc_raids.size(), int(sim.auto_reinforce), roundi(sim.soldiers), _garrisons()] + "|%d" % (sim.annexes.size() + sim.civs.values().filter(func(c): return c.trade).size() * 100)

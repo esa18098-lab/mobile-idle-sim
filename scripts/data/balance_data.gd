@@ -44,6 +44,8 @@ const REQUIRED_INPUT_KEYS: PackedStringArray = [
 	"system_npc_garrison", "system_bonus_points", "rival_growth_per_hr",
 	"level_gain_per_region", "system_target_days",
 	"market_price_floor", "market_price_ceiling", "market_recovery_per_hr",
+	"npc_attack_interval_min", "npc_attack_share", "npc_repel_gold_per_attacker",
+	"npc_offline_loss_cap", "storage_cap_hours",
 ]
 
 const REQUIRED_BUILDING_KEYS: PackedStringArray = [
