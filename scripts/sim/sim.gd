@@ -28,6 +28,7 @@ var queue: Array = []         ## construction and payments, paid in order
 var battles: Array = []       ## {region, soldiers, ends_at}
 var annexes: Array = []       ## {region, ends_at, paid}
 var events: Array = []        ## log of what happened: {hours, text}
+var next_id := 1              ## buildings get stable ids: indexes shift on demolish
 
 # --- derived, cached ---------------------------------------------------------
 var _rates_dirty := true
@@ -54,7 +55,7 @@ func _setup(data: BalanceData) -> void:
 	var first_plan := plan_for_region(2)
 	for type in first_plan.counts:
 		for i in first_plan.counts[type]:
-			buildings.append({"type": type, "level": 1, "region": 1})
+			_add_building(type, 1, 1)
 	_log("Start: %d buildings in %s, %d soldiers" % [buildings.size(), regions[0].name, soldiers])
 
 
@@ -115,6 +116,53 @@ func free_slots(idx: int) -> int:
 	return region(idx).slots - used
 
 
+func building_by_id(id: int) -> Dictionary:
+	for bd in buildings:
+		if bd.id == id:
+			return bd
+	return {}
+
+
+func buildings_in(region_idx: int) -> Array:
+	return buildings.filter(func(bd): return bd.region == region_idx)
+
+
+## Types a player can place in a slot (the station is not built in a slot).
+func buildable_types() -> PackedStringArray:
+	var out: PackedStringArray = []
+	for row in b.rows("buildings"):
+		var key: String = row[BalanceData.KEY_COLUMN]
+		if key != "station":
+			out.append(key)
+	return out
+
+
+## Free slots minus builds already queued there.
+func open_slots(region_idx: int) -> int:
+	var queued := 0
+	for q in queue:
+		if q.kind == "build" and q.region == region_idx:
+			queued += 1
+	return free_slots(region_idx) - queued
+
+
+## What one building makes per hour: {resource, amount}. Factories and barracks
+## report capacity; factories also draw fuel for power.
+func building_output(bd: Dictionary, level: int = -1) -> Dictionary:
+	var lvl: int = bd.level if level < 0 else level
+	var reg := region(bd.region)
+	var out := b.building_output(bd.type) * level_mult(lvl)
+	match bd.type:
+		"home": return {"resource": "citizens", "amount": out}
+		"farm": return {"resource": "food", "amount": out * reg.mult.food}
+		"mine": return {"resource": "metal", "amount": out * reg.mult.metal}
+		"fuel_extractor": return {"resource": "fuel", "amount": out * reg.mult.fuel}
+		"factory_rations": return {"resource": "rations", "amount": out, "power": b.num("factory_fuel_draw") * level_mult(lvl)}
+		"factory_equipment": return {"resource": "equipment", "amount": out, "power": b.num("factory_fuel_draw") * level_mult(lvl)}
+		"barracks": return {"resource": "soldiers", "amount": out}
+	return {"resource": "", "amount": 0.0}
+
+
 func count_type(type: String) -> int:
 	var n := 0
 	for bd in buildings:
@@ -137,32 +185,46 @@ func level_mult(level: int) -> float:
 
 
 ## Hourly capacity of every building type at current levels and terrain.
+## The sum of building_output() over all buildings, so the UI and sim agree.
 func rates() -> Dictionary:
 	if not _rates_dirty:
 		return _rates
 	var r := {"citizens": 0.0, "food": 0.0, "metal": 0.0, "fuel": 0.0,
 		"rations_cap": 0.0, "equipment_cap": 0.0, "barracks_cap": 0.0,
 		"rations_power": 0.0, "equipment_power": 0.0}
-	var draw := b.num("factory_fuel_draw")
 	for bd in buildings:
-		var m := level_mult(bd.level)
-		var reg := region(bd.region)
-		var out := b.building_output(bd.type) * m
-		match bd.type:
-			"home": r.citizens += out
-			"farm": r.food += out * reg.mult.food
-			"mine": r.metal += out * reg.mult.metal
-			"fuel_extractor": r.fuel += out * reg.mult.fuel
-			"factory_rations":
-				r.rations_cap += out
-				r.rations_power += draw * m
-			"factory_equipment":
-				r.equipment_cap += out
-				r.equipment_power += draw * m
-			"barracks": r.barracks_cap += out
+		var o := building_output(bd)
+		match o.resource:
+			"citizens", "food", "metal", "fuel": r[o.resource] += o.amount
+			"rations":
+				r.rations_cap += o.amount
+				r.rations_power += o.power
+			"equipment":
+				r.equipment_cap += o.amount
+				r.equipment_power += o.power
+			"soldiers": r.barracks_cap += o.amount
 	_rates = r
 	_rates_dirty = false
 	return r
+
+
+## Per-hour rates for the resource bar. Raw resources are what flows into the
+## stockpile; rations, equipment and soldiers are capacity (they need inputs).
+func display_rates() -> Dictionary:
+	var r := rates()
+	var food_net: float = r.food - r.citizens * b.num("food_per_citizen")
+	var sold := maxf(0.0, food_net) * b.num("food_sell_share")
+	var fee := b.num("market_fee") - b.num("trade_fee_cut_per_partner") * active_trade_partners()
+	return {
+		"citizens": r.citizens,
+		"food": food_net - sold if food_net > 0.0 else food_net,
+		"metal": r.metal,
+		"fuel": r.fuel,
+		"gold": sold * food_price(sold) * (1.0 - fee),
+		"rations": r.rations_cap,
+		"equipment": r.equipment_cap,
+		"soldiers": r.barracks_cap,
+	}
 
 
 ## Settled market price for food at the player's current selling rate (per hr).
@@ -232,14 +294,45 @@ func cost_of(item: Dictionary) -> Dictionary:
 		"build":
 			if region(item.region).kept_credits > 0:
 				return {}
-			return {"metal": b.num("new_building_metal"), "fuel": b.num("new_building_fuel")}
+			return new_building_cost()
 		"upgrade_lowest":
-			var lvl: int = buildings[_lowest_building()].level
-			var g := pow(b.num("upgrade_cost_growth"), lvl - 1)
-			return {"metal": b.num("upgrade_metal") * g, "fuel": b.num("upgrade_fuel") * g, "gold": b.num("upgrade_gold") * g}
+			return upgrade_cost(buildings[_lowest_building()].level)
+		"upgrade":
+			var bd := building_by_id(item.id)
+			if bd.is_empty():
+				return {}
+			return upgrade_cost(bd.level)
 		"annex_gold":
 			return {"gold": annex_gold(item.region)}
 	return {}
+
+
+## What a queued item will cost when its turn comes: upgrades queued twice on
+## one building are priced at the level they will start from.
+func projected_cost(index: int) -> Dictionary:
+	var item: Dictionary = queue[index]
+	if item.kind != "upgrade":
+		return cost_of(item)
+	return upgrade_cost(projected_level(index))
+
+
+## The level a queued upgrade will start from (current level + earlier upgrades in line).
+func projected_level(index: int) -> int:
+	var item: Dictionary = queue[index]
+	var lvl: int = building_by_id(item.id).get("level", 1)
+	for i in index:
+		if queue[i].kind == "upgrade" and queue[i].id == item.id:
+			lvl += 1
+	return lvl
+
+
+func upgrade_cost(level: int) -> Dictionary:
+	var g := pow(b.num("upgrade_cost_growth"), level - 1)
+	return {"metal": b.num("upgrade_metal") * g, "fuel": b.num("upgrade_fuel") * g, "gold": b.num("upgrade_gold") * g}
+
+
+func new_building_cost() -> Dictionary:
+	return {"metal": b.num("new_building_metal"), "fuel": b.num("new_building_fuel")}
 
 
 # =============================================================================
@@ -247,13 +340,45 @@ func cost_of(item: Dictionary) -> Dictionary:
 # =============================================================================
 
 ## Queue a new building in a region you own. Free if the region has kept buildings.
-func queue_build(type: String, region_idx: int) -> void:
+func queue_build(type: String, region_idx: int) -> bool:
+	if not owns(region_idx) or not (type in buildable_types()) or open_slots(region_idx) <= 0:
+		return false
 	queue.append({"kind": "build", "type": type, "region": region_idx})
+	return true
+
+
+## Queue one level on a specific building.
+func queue_upgrade(building_id: int) -> bool:
+	if building_by_id(building_id).is_empty():
+		return false
+	queue.append({"kind": "upgrade", "id": building_id})
+	return true
 
 
 ## Queue one level on whichever building is lowest when it gets paid for.
 func queue_upgrade_lowest() -> void:
 	queue.append({"kind": "upgrade_lowest"})
+
+
+## Remove a queued item. Nothing has been paid for it yet, so nothing is refunded.
+## Annexation payments can't be cancelled here.
+func cancel_queued(index: int) -> bool:
+	if index < 0 or index >= queue.size() or queue[index].kind == "annex_gold":
+		return false
+	queue.remove_at(index)
+	return true
+
+
+## Tear a building down. No refund. Its queued upgrades are dropped.
+func demolish(building_id: int) -> bool:
+	var bd := building_by_id(building_id)
+	if bd.is_empty():
+		return false
+	buildings.erase(bd)
+	queue = queue.filter(func(q): return not (q.kind == "upgrade" and q.id == building_id))
+	_rates_dirty = true
+	_log("Demolished %s in %s" % [bd.type, region(bd.region).name])
+	return true
 
 
 func set_train_target(n: float) -> void:
@@ -343,9 +468,14 @@ func _apply(item: Dictionary) -> void:
 			if reg.kept_credits > 0:
 				reg.kept_credits -= 1
 				level = reg.kept_level
-			buildings.append({"type": item.type, "level": level, "region": item.region})
+			_add_building(item.type, level, item.region)
 		"upgrade_lowest":
 			buildings[_lowest_building()].level += 1
+		"upgrade":
+			var bd := building_by_id(item.id)
+			if bd.is_empty():
+				return
+			bd.level += 1
 		"annex_gold":
 			for a in annexes:
 				if a.region == item.region:
@@ -456,6 +586,11 @@ func _finish_annex(region_idx: int) -> void:
 	reg.kept_level = maxi(1, floori(avg_level()))
 	_rates_dirty = true
 	_log("Annexed %s" % reg.name)
+
+
+func _add_building(type: String, level: int, region_idx: int) -> void:
+	buildings.append({"id": next_id, "type": type, "level": level, "region": region_idx})
+	next_id += 1
 
 
 func _log(text: String) -> void:

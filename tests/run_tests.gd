@@ -17,7 +17,19 @@ var _failed := 0
 var _skipped := 0
 
 
-func _initialize() -> void:
+var _ran := false
+
+
+## Tests run on the first frame: autoloads (Balance, Game) only exist by then.
+func _process(_delta: float) -> bool:
+	if _ran:
+		return false
+	_ran = true
+	_run_all()
+	return false
+
+
+func _run_all() -> void:
 	var b := BalanceData.new()
 	_check("balance loads with every required key", b.load_dir(), "; ".join(b.errors))
 
@@ -30,6 +42,10 @@ func _initialize() -> void:
 	_finished("test_economy_rates", test_economy_rates(b))
 	_finished("test_strict_playthrough_matches_sheet", test_strict_playthrough_matches_sheet(b))
 	_finished("test_eager_playthrough", test_eager_playthrough(b))
+	_finished("test_build_commands", test_build_commands(b))
+	_finished("test_upgrade_and_demolish", test_upgrade_and_demolish(b))
+	_finished("test_ui_matches_sim", test_ui_matches_sim())
+	_finished("test_ui_places_every_building_type", test_ui_places_every_building_type())
 
 	print("\n%d passed, %d failed, %d skipped" % [_passed, _failed, _skipped])
 	quit(1 if _failed > 0 else 0)
@@ -145,6 +161,145 @@ func test_eager_playthrough(b) -> bool:
 	_check("eager: under the 6 h home-planet cap", total <= 6.0, "got %.2f" % total)
 	_check_no_negative(sim, "eager")
 	return true
+
+
+# --- milestone 3: commands the UI uses -----------------------------------------
+
+func test_build_commands(b) -> bool:
+	var sim = Sim.new_home_planet(b)
+	_check("build: capital starts full", sim.open_slots(1) == 0)
+	_check("build: refused in a full region", not sim.queue_build("farm", 1))
+	_check("build: refused in an enemy region", not sim.queue_build("farm", 2))
+	sim.region(2).owner = Sim.PLAYER
+	_check("build: station can't go in a slot", not sim.queue_build("station", 2))
+	_check("build: every other type is offered", sim.buildable_types().size() == 7)
+	for i in 4:
+		_check("build: farm %d queued in Rustfield" % (i + 1), sim.queue_build("farm", 2))
+	_check("build: 5th refused, queued builds hold slots", not sim.queue_build("farm", 2))
+	_check("build: cancel frees the queued slot", sim.cancel_queued(3) and sim.open_slots(2) == 1)
+	var before: float = sim.rates().food
+	sim.res.metal = 1000.0
+	sim.res.fuel = 1000.0
+	sim.advance(Sim.TICK_HOURS)
+	_check("build: paid and placed", sim.buildings_in(2).size() == 3 and sim.queue.is_empty())
+	_check_close("build: 3 new farms add 3 × 400 food/h on plains", sim.rates().food - before, 1200.0)
+	_check_close("build: paid 300 metal", sim.res.metal, 1000.0 - 300.0 + sim.rates().metal * Sim.TICK_HOURS, 1e-6)
+	return true
+
+
+func test_upgrade_and_demolish(b) -> bool:
+	var sim = Sim.new_home_planet(b)
+	var mine: Dictionary = sim.buildings.filter(func(x): return x.type == "mine")[0]
+	var id: int = mine.id
+	sim.queue_upgrade(id)
+	sim.queue_upgrade(id)
+	_check_close("upgrade: 2nd queued upgrade priced at Lv 2", sim.projected_cost(1).metal, b.num("upgrade_metal") * b.num("upgrade_cost_growth"))
+	for k in ["metal", "fuel", "gold"]:
+		sim.res[k] = 1000.0
+	var metal_before: float = sim.rates().metal
+	sim.advance(Sim.TICK_HOURS)
+	_check("upgrade: mine reached Lv 3", sim.building_by_id(id).level == 3)
+	_check_close("upgrade: mine output × growth²", sim.rates().metal - metal_before, b.building_output("mine") * (pow(b.num("level_output_growth"), 2) - 1.0))
+	sim.queue_upgrade(id)
+	_check("demolish: removes the building", sim.demolish(id) and sim.building_by_id(id).is_empty())
+	_check("demolish: drops its queued upgrade", sim.queue.is_empty())
+	_check("demolish: frees the slot", sim.open_slots(1) == 1)
+	_check("demolish: ids stay unique after rebuilding", sim.queue_build("mine", 1) and _ids_unique_after_pay(sim))
+	return true
+
+
+func _ids_unique_after_pay(sim) -> bool:
+	sim.advance(Sim.TICK_HOURS)
+	var seen := {}
+	for bd in sim.buildings:
+		if seen.has(bd.id):
+			return false
+		seen[bd.id] = true
+	return sim.buildings.size() == 8
+
+
+# --- milestone 3: the screens show the sim's numbers ---------------------------
+
+func _game() -> Node:
+	var g: Node = root.get_node("Game")
+	g.paused = true      # tests drive time themselves
+	g.new_game()
+	return g
+
+
+func _main_screen() -> Control:
+	var main: Control = load("res://scenes/main.tscn").instantiate()
+	root.add_child(main)
+	return main
+
+
+func test_ui_matches_sim() -> bool:
+	var Look := preload("res://scripts/ui/look.gd")
+	var game := _game()
+	var main := _main_screen()
+	game.dev_add_resources(500.0)
+	game.advance_seconds(120)
+	main.resource_bar.refresh()
+	var rates: Dictionary = game.sim.display_rates()
+	for r in rates:
+		_check("ui: resource bar %s rate = sim" % r, main.resource_bar.rate_text(r) == Look.rate(rates[r]), main.resource_bar.rate_text(r))
+	main.show_region(1)
+	var grid: Node = main.view.get_node("slots")
+	_check("ui: capital shows 8 buildings", grid.get_child_count() == 8)
+	for bd in game.sim.buildings_in(1):
+		var tile: Node = grid.get_node("building_%d" % bd.id)
+		var want := Look.rate(game.sim.building_output(bd).amount)
+		_check("ui: %s tile shows %s" % [bd.type, want], _texts(tile).any(func(t): return t.begins_with(want)))
+	main.queue_free()
+	return true
+
+
+## Milestone 3 "done when": every building type can be placed through the screens,
+## and the rates on screen move with the sim.
+func test_ui_places_every_building_type() -> bool:
+	var Look := preload("res://scripts/ui/look.gd")
+	var game := _game()
+	var main := _main_screen()
+	var r2: int = game.dev_take_next_region()     # Rustfield, 4 slots
+	var r3: int = game.dev_take_next_region()     # Ironridge, 5 slots
+	game.dev_add_resources(5000.0)
+	var types: PackedStringArray = game.sim.buildable_types()
+	for i in types.size():
+		var where: int = r2 if i < 4 else r3
+		main.show_region(where)
+		var empty: Button = main.view.get_node("slots").get_child(main.view.get_node("slots").get_child_count() - 1)
+		empty.pressed.emit()
+		var btn: Button = main._sheet_box.get_node("build_" + types[i])
+		btn.pressed.emit()
+	game.advance_seconds(1)
+	for t in types:
+		_check("ui: placed a %s" % t, game.sim.buildings.any(func(bd): return bd.type == t and bd.region > 1))
+	_check("ui: all paid, queue empty", game.sim.queue.is_empty())
+	# Upgrade through the building sheet and watch the bar follow.
+	var farm: Dictionary = game.sim.buildings.filter(func(bd): return bd.type == "farm" and bd.region == r2)[0]
+	main.show_region(r2)
+	main.view.get_node("slots/building_%d" % farm.id).pressed.emit()
+	main._sheet_box.get_node("upgrade").pressed.emit()
+	game.advance_seconds(1)
+	_check("ui: upgrade through the sheet", game.sim.building_by_id(farm.id).level == 2)
+	main.resource_bar.refresh()
+	_check("ui: food rate on the bar follows the upgrade", main.resource_bar.rate_text("food") == Look.rate(game.sim.display_rates().food))
+	main.open_building_sheet(farm.id)
+	main.go_back()
+	_check("ui: back closes the sheet first", not main._sheet_layer.visible and main.view.has_signal("back_tapped"))
+	main.go_back()
+	_check("ui: back again returns to the planet", main.view.has_signal("region_tapped"))
+	main.queue_free()
+	return true
+
+
+func _texts(node: Node) -> Array:
+	var out: Array = []
+	if node is Label:
+		out.append(node.text)
+	for c in node.get_children():
+		out.append_array(_texts(c))
+	return out
 
 
 func _check_no_negative(sim, label: String) -> void:

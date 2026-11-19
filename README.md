@@ -12,7 +12,8 @@
 |---|---|
 | 1. Setup, repo, CSV pipeline, Android preset | Done in code. You still need to install it on a phone once (steps below). |
 | 2. Headless sim core matching the Timeline tab within 5% | Done. A cautious playthrough takes 5.08 h vs the sheet's 5.106 h, and every step is within 5%. An attentive player takes 3.92 h. |
-| 3+. Save/load, offline catch-up, the planet map UI | Next. See the build plan. |
+| 3. Region map and building slots | Done. Planet and region views, build, upgrade, demolish, the queue, and the resource bar. Tests check that every building type can be placed through the buttons and that the screen's rates equal the sim's. |
+| 4. Combat and conquest | Next. |
 
 ### What the two playthroughs mean
 
@@ -27,7 +28,12 @@ scripts/data/   balance_data.gd: loads the CSVs and looks values up by key.
 scripts/sim/    The sim core. Pure GDScript, no scenes, no clock of its own.
                   sim.gd: home-planet state, commands, 1-second ticks. combat.gd: battle math.
                   autoplayer.gd: plays the default path for tests (cautious or attentive).
+scripts/game/   game.gd (autoload Game): the only code that reads the clock. Feeds the sim real time and passes UI commands to it.
+scripts/ui/     main_screen.gd (resource bar, views, queue, sheets), planet_view.gd, region_view.gd,
+                  look.gd (placeholder colours, labels, theme), icon.gd (placeholder 16×16 icons).
+assets/fonts/   Silkscreen (SIL OFL), an 8 px pixel font: use sizes 8 or 16 only.
 tools/          playthrough.gd: prints a region-by-region playthrough next to the sheet.
+                shots.gd: renders every screen to PNGs (needs a display; xvfb-run on a server).
 scripts/autoload/  Balance: the one loaded copy of the balance data.
 scripts/ui/     Presentation. It reads the sim and sends it commands; it holds no game rules.
 scenes/         main.tscn: a build-check screen for now.
@@ -71,7 +77,7 @@ The run fails on any failed check **or** any script error. Godot keeps running a
 5. On the phone, turn on **Developer options → USB debugging** and plug the phone in.
 6. Click the Android **Remote Deploy** button in the top-right of the editor. That one click builds and installs the app from then on.
 
-What you should see: the build-check screen with the defender advantage, farm output and two battles. Tap **Reload balance CSVs** after editing a CSV to watch the numbers change.
+What you should see: the home planet map. Tap the capital to see its 8 buildings. The **Dev** button (debug builds only) has game speed up to ×600, free resources, and "take the next enemy region", which gives you empty slots to build in until conquest exists. Dev → "Build check screen" opens the milestone 1–2 screen with the CSV reload and the sim run.
 
 Signing keys (`*.keystore`, `*.jks`) are git-ignored. Keep the release keystore somewhere safe outside the repo; losing it means you can't update the app on the Play Store.
 
