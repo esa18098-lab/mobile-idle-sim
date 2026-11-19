@@ -100,6 +100,10 @@ func load_dir(dir: String = DEFAULT_DIR) -> bool:
 	return errors.is_empty()
 
 
+func has(key: String) -> bool:
+	return inputs.has(key)
+
+
 ## A numeric input. "40%" comes back as 0.4. Unknown keys are an error.
 func num(key: String) -> float:
 	if not inputs.has(key):

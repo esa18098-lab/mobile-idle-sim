@@ -62,6 +62,7 @@ func _ready() -> void:
 	_seen_events = Game.sim.events.size()
 
 	Game.changed.connect(_on_changed)
+	Game.away.connect(func(summary): _open_sheet(_away_sheet.bind(summary)))
 	show_planet()
 	_refresh_bottom()
 
@@ -570,6 +571,31 @@ func _army_sheet() -> void:
 			func(): Game.cmd_train_target(need))
 		btn.name = "train_for_%d" % reg.index
 		_sheet_box.add_child(btn)
+
+
+# --- while you were away ------------------------------------------------------
+
+func _away_sheet(summary: Dictionary) -> void:
+	var secs := int(summary.seconds)
+	_sheet_title("While you were away")
+	_sheet_box.add_child(Look.label("%dh %02dm passed." % [secs / 3600, (secs / 60) % 60], Look.FONT_SIZE, Look.DIM))
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 16)
+	for k in ["citizens", "food", "metal", "fuel", "gold", "rations", "equipment", "soldiers"]:
+		var v: float = summary.gained.get(k, 0.0)
+		if absf(v) < 0.5:
+			continue
+		grid.add_child(Look.label(k.capitalize(), Look.FONT_SIZE, Look.RESOURCE_COLORS.get(k, Look.TEXT)))
+		grid.add_child(Look.label(("+" if v > 0.0 else "") + Look.num(v)))
+	_sheet_box.add_child(grid)
+	for e in summary.events:
+		if e.kind == "info":
+			continue
+		var l := Look.label(e.text, Look.FONT_SMALL, Look.BAD if e.kind == "battle_lost" else Look.ACCENT)
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_sheet_box.add_child(l)
+	_seen_events = Game.sim.events.size()   # already shown here, no toasts
 
 
 # --- diplomacy ----------------------------------------------------------------

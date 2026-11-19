@@ -16,7 +16,8 @@
 | 4. Combat and conquest | Done. Borders from the map grid, the attack screen with a live outcome preview, occupy or raze, timed battles, survivors coming home, the Army screen's standing training order, and capture pop-ups. Tests take the whole planet by force (3.83 h attentive). |
 | 5. NPC behaviour | Waiting on design numbers (attack frequency and size, offline loss cap, repel payout). |
 | 6. Diplomacy and market | Done. Free trade rights, annexation of any civilization (one talk per civilization at a time), and a market whose price moves with your trades and recovers 10% an hour, with manual buy and sell. The conquer-everyone and annex-Veyra paths match the sheet's maths within 5% at every region. |
-| 7. Offline progress and saves | Next. |
+| 7. Offline progress and saves | Done. Saves are JSON plus a checksum, written safely and loaded at start, on resume and every 30 s. Offline catch-up uses 60 s steps that stop at battle and annexation ends: 8 h away matches 8 h live within 1%, and a week catches up in about 0.1 s. A "while you were away" summary, notification timing (delivery needs an Android plugin), and the server stubs. Storage caps are built but off until the sheet has a `storage_cap_hours` key. |
+| 8. Automation | Needs a design pass: what each planet focus does. |
 
 ### What the two playthroughs mean
 
@@ -54,7 +55,9 @@ scripts/data/   balance_data.gd: loads the CSVs and looks values up by key.
 scripts/sim/    The sim core. Pure GDScript, no scenes, no clock of its own.
                   sim.gd: home-planet state, commands, 1-second ticks. combat.gd: battle math.
                   autoplayer.gd: plays the default path for tests (cautious or attentive).
-scripts/game/   game.gd (autoload Game): the only code that reads the clock. Feeds the sim real time and passes UI commands to it.
+scripts/game/   game.gd (autoload Game): the only code that reads the clock. Feeds the sim real time, passes UI
+                  commands to it, saves, and catches up time away. save_system.gd (JSON + checksum),
+                  server.gd (stubs for the galaxy stage), notifier.gd (local notifications via a plugin).
 scripts/ui/     main_screen.gd (resource bar, views, queue, sheets), planet_view.gd, region_view.gd,
                   look.gd (placeholder colours, labels, theme), icon.gd (placeholder 16×16 icons).
 assets/fonts/   Silkscreen (SIL OFL), an 8 px pixel font: use sizes 8 or 16 only.
@@ -106,6 +109,8 @@ The run fails on any failed check **or** any script error. Godot keeps running a
 6. Click the Android **Remote Deploy** button in the top-right of the editor. That one click builds and installs the app from then on.
 
 What you should see: the home planet map. Tap the capital to see its 8 buildings. The **Dev** button (debug builds only) has game speed up to ×600, free resources, and "take the next enemy region", which gives you empty slots to build in until conquest exists. Dev → "Build check screen" opens the milestone 1–2 screen with the CSV reload and the sim run.
+
+**Notifications** need an Android local-notification plugin; see `scripts/game/notifier.gd`. Until one is installed the game still works out when to notify; it just can't deliver.
 
 Signing keys (`*.keystore`, `*.jks`) are git-ignored. Keep the release keystore somewhere safe outside the repo; losing it means you can't update the app on the Play Store.
 

@@ -70,12 +70,24 @@ func _initialize() -> void:
 			Game.dev_add_resources(2000.0)
 			Game.cmd_sell("metal", 1000.0)
 			_main._open_sheet(_main._market_sheet)],
+		["away", func():
+			_main.close_sheet()
+			Game.sim.set_train_target(80)
+			Game.sim.soldiers = 40.0
+			Game.cmd_attack(4, 35, "Occupy")
+			var SaveSystem = load("res://scripts/game/save_system.gd")
+			Game.save_path = "user://shots_save.json"
+			SaveSystem.write(Game.sim.to_dict(), Game.now_unix() - 3.0 * 3600.0, Game.save_path)
+			Game.load_game()
+			DirAccess.remove_absolute(Game.save_path)],
 	]
 
 
 func _process(_d: float) -> bool:
 	if Game == null:
 		Game = root.get_node_or_null("Game")
+		Game.persist = false
+		Game.new_game()
 	_frame += 1
 	var i := _frame / 6
 	if _frame % 6 == 1 and i < _steps.size():

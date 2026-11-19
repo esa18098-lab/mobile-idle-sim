@@ -567,7 +567,6 @@ func start_annex(region_idx: int) -> bool:
 	if annex_blocker(region_idx) != "":
 		return false
 	annexes.append({"region": region_idx, "ends_at": hours + relations_hours(region_idx), "paid": false})
-	queue.push_front({"kind": "annex_gold", "region": region_idx})
 	_log("Start annexing %s (relations %.1f min, %.1f gold)" % [region(region_idx).name, relations_hours(region_idx) * 60.0, annex_gold(region_idx)])
 	return true
 
@@ -582,6 +581,41 @@ func advance(dt_hours: float) -> void:
 		var step := minf(TICK_HOURS, left)
 		_tick(step)
 		left -= step
+
+
+## Offline catch-up: the same rules in coarser steps. Production is steady
+## between events, so a step only has to stop where a battle or an annexation
+## is due. 8 hours this way matches 8 hours of 1-second ticks within 1%.
+const CATCH_UP_STEP_HOURS := 60.0 / 3600.0
+
+func catch_up(dt_hours: float) -> void:
+	var end := hours + dt_hours
+	while hours < end - 1e-9:
+		var step := minf(CATCH_UP_STEP_HOURS, end - hours)
+		var due := _next_event_hours()
+		if due > hours + 1e-9:
+			step = minf(step, due - hours)
+		_tick(step)
+
+
+## What a player would want a phone notification for, and when (game hours).
+func upcoming_notifications() -> Array:
+	var out: Array = []
+	for battle in battles:
+		out.append({"at": battle.ends_at, "text": "The battle for %s is over." % region(battle.region).name})
+	for a in annexes:
+		out.append({"at": a.ends_at, "text": "Talks with %s are done." % region(a.region).name + ("" if a.paid else " They still need gold.")})
+	out.sort_custom(func(x, y): return x.at < y.at)
+	return out
+
+
+func _next_event_hours() -> float:
+	var t := INF
+	for battle in battles:
+		t = minf(t, battle.ends_at)
+	for a in annexes:
+		t = minf(t, a.ends_at)
+	return t
 
 
 func _tick(dt: float) -> void:
@@ -601,6 +635,8 @@ func _tick(dt: float) -> void:
 	res.metal += r.metal * dt
 	res.fuel += r.fuel * dt
 
+	_apply_storage_cap()
+
 	var fade := pow(1.0 - b.num("market_recovery_per_hr"), dt)
 	for k in market:
 		market[k].recent *= fade
@@ -613,13 +649,46 @@ func _tick(dt: float) -> void:
 	_resolve_events()
 
 
-## Pays queued items in order. The head blocks the rest (no skipping ahead).
+## Stockpiles hold at most `storage_cap_hours` of current production. Off until
+## the sheet has that key (a design number still to decide).
+func storage_cap(res_name: String) -> float:
+	if not b.has("storage_cap_hours"):
+		return INF
+	var rate: float = display_rates().get(res_name, 0.0)
+	return maxf(0.0, rate) * b.num("storage_cap_hours")
+
+
+func _apply_storage_cap() -> void:
+	if not b.has("storage_cap_hours"):
+		return
+	for k in ["citizens", "food", "metal", "fuel", "gold"]:
+		res[k] = minf(res[k], maxf(storage_cap(k), 0.0))
+
+
+## Gold promised to annexations that haven't been paid yet.
+func gold_reserved() -> float:
+	var total := 0.0
+	for a in annexes:
+		if not a.paid:
+			total += annex_gold(a.region)
+	return total
+
+
+## Annexation payments go first and never wait behind construction. Then the
+## build queue pays in order; its head blocks the rest (no skipping ahead), and
+## it can't spend gold set aside for annexations.
 func _pay_queue() -> void:
+	for a in annexes:
+		if not a.paid and res.gold >= annex_gold(a.region):
+			res.gold -= annex_gold(a.region)
+			a.paid = true
+	var reserved := gold_reserved()
 	while not queue.is_empty():
 		var item: Dictionary = queue[0]
 		var cost := cost_of(item)
 		for k in cost:
-			if res[k] < cost[k]:
+			var have: float = res[k] - (reserved if k == "gold" else 0.0)
+			if have < cost[k]:
 				return
 		for k in cost:
 			res[k] -= cost[k]
@@ -762,6 +831,77 @@ func _finish_annex(region_idx: int) -> void:
 	raze_penalty = false
 	_rates_dirty = true
 	_log("Annexed %s" % reg.name, "annexed", region_idx)
+
+
+# =============================================================================
+# Saving: plain data only. Static data (terrain, slots, civ names) comes from
+# the balance CSVs at load, so a balance change applies to existing saves.
+# =============================================================================
+
+const SAVE_VERSION := 1
+
+func to_dict() -> Dictionary:
+	var regs := []
+	for reg in regions:
+		regs.append({"index": reg.index, "owner": reg.owner, "garrison": reg.garrison,
+			"kept_credits": reg.kept_credits, "kept_level": reg.kept_level})
+	var civ_state := {}
+	for name in civs:
+		civ_state[name] = {"trade": civs[name].trade}
+	var recent := {}
+	for k in market:
+		recent[k] = market[k].recent
+	return {
+		"version": SAVE_VERSION, "hours": hours, "res": res.duplicate(), "soldiers": soldiers,
+		"train_target": train_target, "buildings": buildings.duplicate(true), "regions": regs,
+		"civs": civ_state, "queue": queue.duplicate(true), "battles": battles.duplicate(true),
+		"annexes": annexes.duplicate(true), "events": events.slice(maxi(0, events.size() - 50)),
+		"next_id": next_id, "razed_count": razed_count, "raze_penalty": raze_penalty, "market_recent": recent,
+	}
+
+
+func apply_dict(d: Dictionary) -> void:
+	hours = float(d.hours)
+	for k in d.res:
+		res[k] = float(d.res[k])
+	soldiers = float(d.soldiers)
+	train_target = float(d.train_target)
+	buildings = []
+	for bd in d.buildings:
+		buildings.append({"id": int(bd.id), "type": bd.type, "level": int(bd.level), "region": int(bd.region)})
+	for saved in d.regions:
+		var reg := region(int(saved.index))
+		reg.owner = saved.owner
+		reg.garrison = float(saved.garrison)
+		reg.kept_credits = int(saved.kept_credits)
+		reg.kept_level = int(saved.kept_level)
+	for name in d.civs:
+		if civs.has(name):
+			civs[name].trade = bool(d.civs[name].trade)
+	queue = []
+	for q in d.queue:
+		var item: Dictionary = q.duplicate()
+		for k in ["region", "id"]:
+			if item.has(k):
+				item[k] = int(item[k])
+		queue.append(item)
+	battles = []
+	for battle in d.battles:
+		battles.append({"region": int(battle.region), "soldiers": float(battle.soldiers), "started_at": float(battle.started_at),
+			"ends_at": float(battle.ends_at), "on_capture": battle.on_capture})
+	annexes = []
+	for a in d.annexes:
+		annexes.append({"region": int(a.region), "ends_at": float(a.ends_at), "paid": bool(a.paid)})
+	events = []
+	for e in d.events:
+		events.append({"hours": float(e.hours), "text": e.text, "kind": e.kind, "region": int(e.region)})
+	next_id = int(d.next_id)
+	razed_count = int(d.razed_count)
+	raze_penalty = bool(d.raze_penalty)
+	for k in d.market_recent:
+		if market.has(k):
+			market[k].recent = float(d.market_recent[k])
+	_rates_dirty = true
 
 
 func _add_building(type: String, level: int, region_idx: int) -> void:

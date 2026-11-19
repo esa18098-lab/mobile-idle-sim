@@ -54,6 +54,12 @@ func _run_all() -> void:
 	_finished("test_market", test_market(b))
 	_finished("test_diplomacy", test_diplomacy(b))
 	_finished("test_ui_market_and_diplomacy", test_ui_market_and_diplomacy())
+	_finished("test_offline_equals_online", test_offline_equals_online(b))
+	_finished("test_save_roundtrip", test_save_roundtrip(b))
+	_finished("test_save_file_and_checksum", test_save_file_and_checksum(b))
+	_finished("test_game_load_catches_up", test_game_load_catches_up())
+	_finished("test_storage_cap", test_storage_cap())
+	_finished("test_annex_payment_never_blocks_building", test_annex_payment_never_blocks_building(b))
 
 	print("\n%d passed, %d failed, %d skipped" % [_passed, _failed, _skipped])
 	quit(1 if _failed > 0 else 0)
@@ -231,6 +237,7 @@ func _ids_unique_after_pay(sim) -> bool:
 func _game() -> Node:
 	var g: Node = root.get_node("Game")
 	g.paused = true      # tests drive time themselves
+	g.persist = false    # and never touch the player's save
 	g.new_game()
 	return g
 
@@ -480,6 +487,145 @@ func test_ui_market_and_diplomacy() -> bool:
 	main._sheet_box.find_child("sell_metal", true, false).pressed.emit()
 	_check("ui: selling metal through the market sheet pays gold", game.sim.res.gold > gold)
 	main.queue_free()
+	return true
+
+
+# --- milestone 7: offline progress and saves -----------------------------------
+
+const SaveSystem := preload("res://scripts/game/save_system.gd")
+
+
+## A busy mid-game state: a battle under way, talks open, a queue, a training order.
+func _busy_sim(b):
+	var sim = Sim.new_home_planet(b)
+	sim.attack(2, 20, "Occupy")
+	sim.sign_trade("Veyra Compact")
+	sim.start_annex(5)
+	sim.demolish(sim.buildings.filter(func(x): return x.type == "mine")[0].id)
+	sim.queue_build("barracks", 1)
+	for i in 6:
+		sim.queue_upgrade_lowest()
+	sim.set_train_target(120)
+	return sim
+
+
+## Milestone 7 "done when": 8 hours of catch-up equals 8 hours of live play within 1%.
+func test_offline_equals_online(b) -> bool:
+	var live = _busy_sim(b)
+	var away = Sim.new_home_planet(b)
+	away.apply_dict(JSON.parse_string(JSON.stringify(live.to_dict())))
+	var t0 := Time.get_ticks_msec()
+	live.advance(8.0)
+	var t1 := Time.get_ticks_msec()
+	away.catch_up(8.0)
+	var t2 := Time.get_ticks_msec()
+	print("  info  8 h live: %d ms, 8 h catch-up: %d ms" % [t1 - t0, t2 - t1])
+	for k in live.res:
+		var a: float = live.res[k]
+		var c: float = away.res[k]
+		_check("offline: %s within 1%% (live %.0f, away %.0f)" % [k, a, c], absf(a - c) <= maxf(absf(a) * 0.01, 2.0))
+	_check("offline: soldiers within 1%", absf(live.soldiers - away.soldiers) <= maxf(live.soldiers * 0.01, 1.0))
+	_check("offline: same regions owned", live.regions.map(func(r): return r.owner) == away.regions.map(func(r): return r.owner))
+	var lv = live.buildings.map(func(x): return [x.type, x.level, x.region])
+	var av = away.buildings.map(func(x): return [x.type, x.level, x.region])
+	_check("offline: same buildings and levels", lv == av)
+	_check("offline: same battle and annex outcomes", live.events.size() == away.events.size())
+	var week = _busy_sim(b)
+	var t3 := Time.get_ticks_msec()
+	week.catch_up(24.0 * 7.0)
+	var ms := Time.get_ticks_msec() - t3
+	_check("offline: a week away catches up in under 2 s (%d ms)" % ms, ms < 2000)
+	return true
+
+
+func test_save_roundtrip(b) -> bool:
+	# Godot's JSON parser can lose the 17th digit of a float, so a reload is
+	# within ~1e-16 rather than bit-exact. What determinism needs is that the
+	# same save file always plays out the same way, and stays close to the
+	# original game.
+	var a = _busy_sim(b)
+	a.advance(0.3)
+	var json := JSON.stringify(a.to_dict(), "", true, true)
+	var c = Sim.new_home_planet(b)
+	c.apply_dict(JSON.parse_string(json))
+	var d = Sim.new_home_planet(b)
+	d.apply_dict(JSON.parse_string(json))
+	c.advance(2.0)
+	d.advance(2.0)
+	a.advance(2.0)
+	_check("save: two loads of one file play out identically", JSON.stringify(c.to_dict(), "", true, true) == JSON.stringify(d.to_dict(), "", true, true))
+	var worst := 0.0
+	for k in a.res:
+		worst = maxf(worst, absf(a.res[k] - c.res[k]) / maxf(1.0, absf(a.res[k])))
+	_check("save: a loaded game stays with the original (worst " + str(worst) + ")", worst < 1e-9 and a.buildings.size() == c.buildings.size() and a.events.size() == c.events.size())
+	return true
+
+
+func test_save_file_and_checksum(b) -> bool:
+	var path := "user://test_save.json"
+	var sim = _busy_sim(b)
+	_check("save file: written", SaveSystem.write(sim.to_dict(), 1000.0, path))
+	var got := SaveSystem.read(path)
+	_check("save file: read back with its time", got.ok and is_equal_approx(got.saved_unix, 1000.0))
+	var raw := FileAccess.get_file_as_string(path)
+	var tampered := raw.replace("barracks", "barrackz")
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	f.store_string(tampered)
+	f.close()
+	var bad := SaveSystem.read(path)
+	_check("save file: an edited save is rejected", not bad.ok and bad.error == "checksum mismatch")
+	_check("save file: rejected save is kept aside", FileAccess.file_exists(SaveSystem.BACKUP))
+	DirAccess.remove_absolute(path)
+	DirAccess.remove_absolute(SaveSystem.BACKUP)
+	return true
+
+
+func test_game_load_catches_up() -> bool:
+	var game := _game()
+	var path := "user://test_game_save.json"
+	game.save_path = path
+	game.sim.set_train_target(40)
+	var metal_rate: float = game.sim.rates().metal
+	SaveSystem.write(game.sim.to_dict(), game.now_unix() - 3600.0, path)   # saved an hour ago
+	var main := _main_screen()
+	_check("load: the save loads", game.load_game())
+	_check_close("load: an hour away is caught up", game.last_away.seconds, 3600.0, 0.01)
+	_check_close("load: about an hour of metal gained", game.last_away.gained.metal, metal_rate - 40.0, 0.05)
+	_check("load: the away summary opens", main._sheet_layer.visible)
+	game.sim.soldiers = 50.0
+	game.cmd_attack(2, 30, "Occupy")
+	game.schedule_notifications()
+	var Notifier := preload("res://scripts/game/notifier.gd")
+	_check("notify: a battle end is scheduled in the future", Notifier.last_scheduled.size() == 1 and Notifier.last_scheduled[0].at_unix > game.now_unix())
+	game.persist = true
+	_check("load: autosave writes", game.save_game())
+	game.persist = false
+	game.save_path = SaveSystem.PATH
+	DirAccess.remove_absolute(path)
+	main.queue_free()
+	return true
+
+
+## An annexation waiting for gold must not freeze construction that needs none.
+func test_annex_payment_never_blocks_building(b) -> bool:
+	var sim = Sim.new_home_planet(b)
+	sim.demolish(sim.buildings.filter(func(x): return x.type == "farm")[0].id)   # no food, so no gold
+	sim.start_annex(2)
+	sim.queue_build("mine", 1)
+	sim.advance(0.5)
+	_check("queue: a metal-only build goes ahead while an annexation waits for gold", sim.count_type("mine") == 3)
+	_check("queue: the annexation is still waiting", sim.annexing(2) and not sim.owns(2))
+	return true
+
+
+func test_storage_cap() -> bool:
+	var capped := BalanceData.new()
+	capped.load_dir()
+	capped.inputs["storage_cap_hours"] = "2"
+	var sim = Sim.new_home_planet(capped)
+	sim.catch_up(10.0)
+	_check_close("storage: metal stops at 2 h of production", sim.res.metal, sim.rates().metal * 2.0, 1e-6)
+	_check("storage: off when the sheet has no cap", is_inf(Sim.new_home_planet(root.get_node("Balance").data).storage_cap("metal")))
 	return true
 
 
