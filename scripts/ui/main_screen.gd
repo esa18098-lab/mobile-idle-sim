@@ -183,7 +183,8 @@ func _bottom_bar() -> Control:
 	_clock.custom_minimum_size = Vector2(62, 0)
 	_clock.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	row.add_child(_clock)
-	if OS.is_debug_build():
+	# Debug builds, and preview builds exported with the "devtools" feature tag.
+	if OS.is_debug_build() or OS.has_feature("devtools"):
 		var dev := Button.new()
 		dev.name = "dev"
 		dev.text = "Dev"

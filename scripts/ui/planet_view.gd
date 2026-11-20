@@ -106,7 +106,7 @@ func _region_tile(reg: Dictionary) -> Button:
 	var border: Color = Look.OWNER_COLORS.get(reg.owner, Look.LINE)
 	var tile := Button.new()
 	tile.name = "region_%d" % reg.index
-	tile.custom_minimum_size = Vector2(114, 118)
+	tile.custom_minimum_size = Vector2(114, 100)   # 4 rows fit a 360×640 screen with the bars
 	tile.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	tile.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	for state in ["normal", "hover", "focus", "disabled"]:
