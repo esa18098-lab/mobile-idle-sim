@@ -9,6 +9,7 @@ extends RefCounted
 
 const BalanceData := preload("res://scripts/data/balance_data.gd")
 const Combat := preload("res://scripts/sim/combat.gd")
+const MapGen := preload("res://scripts/sim/map_gen.gd")
 
 const PLAYER := "You"
 const RESOURCES: PackedStringArray = ["citizens", "food", "metal", "fuel", "gold", "rations", "equipment"]
@@ -31,13 +32,13 @@ var events: Array = []        ## log of what happened: {hours, text}
 var next_id := 1              ## buildings get stable ids: indexes shift on demolish
 var razed_count := 0          ## regions razed so far (slows every later annexation)
 var raze_penalty := false     ## citizens and gold down until your next capture
-var map_pos := {}             ## region -> Vector2i on the map grid; borders come from it
+var map := {}                 ## the generated map: cells, adjacency, anchors (see map_gen.gd)
+var map_seed := 1             ## a new game picks one; a save keeps it
 var market := {}              ## resource -> {base, supply, demand, sens, recent}
 ## `recent` is the player's recent net sales (units/hr equivalent): selling
 ## pushes prices down, buying pushes them up, and it fades by
 ## market_recovery_per_hr each hour.
 
-const MAP_PATH := "res://data/maps/home_planet.csv"
 
 # --- NPC attacks ---------------------------------------------------------------
 var npc_attacks_enabled := true   ## balance checks against the sheet turn this off (the sheet has no raids)
@@ -70,8 +71,9 @@ var _rates := {}
 var _type_by_name := {}       ## "Factory: rations" -> "factory_rations"
 
 
-static func new_home_planet(data: BalanceData) -> RefCounted:
+static func new_home_planet(data: BalanceData, p_map_seed: int = 1) -> RefCounted:
 	var sim = load("res://scripts/sim/sim.gd").new()
+	sim.map_seed = p_map_seed
 	sim._setup(data)
 	return sim
 
@@ -145,26 +147,23 @@ func _load_market() -> void:
 
 
 func _load_map() -> void:
-	for row in BalanceData.read_csv(MAP_PATH):
-		map_pos[int(row["Region"])] = Vector2i(int(row["Column"]), int(row["Row"]))
+	var specs: Array = []
+	for reg in regions:
+		specs.append({"index": reg.index, "civ": reg.civ, "slots": reg.slots})
+	map = MapGen.generate(map_seed, specs)
 
 
 # =============================================================================
 # Queries
 # =============================================================================
 
-## Regions share a border when they sit side by side on the map grid.
+## Regions share a border when their territories touch on the generated map.
 func borders(a: int, b_idx: int) -> bool:
-	var d: Vector2i = map_pos[a] - map_pos[b_idx]
-	return absi(d.x) + absi(d.y) == 1
+	return b_idx in map.adjacency.get(a, [])
 
 
 func neighbours(idx: int) -> Array:
-	var out: Array = []
-	for other in map_pos:
-		if other != idx and borders(idx, other):
-			out.append(other)
-	return out
+	return map.adjacency.get(idx, [])
 
 
 ## Why the player can't attack a region right now, or "" if they can.
@@ -1148,7 +1147,7 @@ func to_dict() -> Dictionary:
 	for k in market:
 		recent[k] = market[k].recent
 	return {
-		"version": SAVE_VERSION, "hours": hours, "res": res.duplicate(), "soldiers": soldiers,
+		"version": SAVE_VERSION, "map_seed": map_seed, "hours": hours, "res": res.duplicate(), "soldiers": soldiers,
 		"train_target": train_target, "buildings": buildings.duplicate(true), "regions": regs,
 		"civs": civ_state, "queue": queue.duplicate(true), "battles": battles.duplicate(true),
 		"annexes": annexes.duplicate(true), "events": _events_to_save(),
@@ -1170,6 +1169,9 @@ func _events_to_save() -> Array:
 
 
 func apply_dict(d: Dictionary) -> void:
+	if int(d.get("map_seed", map_seed)) != map_seed:
+		map_seed = int(d.map_seed)
+		_load_map()
 	hours = float(d.hours)
 	for k in d.res:
 		res[k] = float(d.res[k])

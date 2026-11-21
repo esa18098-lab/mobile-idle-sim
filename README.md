@@ -63,6 +63,7 @@ On the raze paths, single regions can drift up to 6%. Razing slows annexation ta
 balance/        CSVs exported from the sheet (one per tab). The game reads these and nothing else for numbers.
 scripts/data/   balance_data.gd: loads the CSVs and looks values up by key.
 scripts/sim/    The sim core. Pure GDScript, no scenes, no clock of its own.
+                  map_gen.gd: the procedural home-planet map (seeded; a save keeps only the seed).
                   sim.gd: home-planet state, commands, 1-second ticks. combat.gd: battle math.
                   autoplayer.gd: plays the default path for tests (cautious or attentive).
 scripts/game/   game.gd (autoload Game): the only code that reads the clock. Feeds the sim real time, passes UI
@@ -71,7 +72,6 @@ scripts/game/   game.gd (autoload Game): the only code that reads the clock. Fee
 scripts/ui/     main_screen.gd (resource bar, views, queue, sheets), planet_view.gd, region_view.gd,
                   look.gd (placeholder colours, labels, theme), icon.gd (placeholder 16×16 icons).
 assets/fonts/   Silkscreen (SIL OFL), an 8 px pixel font: use sizes 8 or 16 only.
-data/maps/      home_planet.csv: where each region sits on the map grid. Regions that sit side by side share a border.
 tools/          playthrough.gd: prints a region-by-region playthrough next to the sheet.
                 sheet_model.py: the Timeline tab in Python (exact), for any path; --golden writes tests/golden.
                 paths.gd: compares the paths through the home planet.
@@ -81,6 +81,17 @@ scripts/ui/     Presentation. It reads the sim and sends it commands; it holds n
 scenes/         main.tscn: a build-check screen for now.
 tests/          Headless tests and golden numbers copied from the sheet.
 ```
+
+## The map
+
+Every new game draws its own home-planet map. A noisy island is grown into 12 territories, and the sheet's 12 regions are placed on them. Names, slots, terrain, garrisons and owners all come from the sheet, so the balance doesn't change. The generator keeps four rules, and draws again (with the next seed) when a map can't meet them:
+
+- Every region on the default path borders one you'd already hold.
+- Each civilization's land is one territory.
+- Regions are placed outward from the capital in the south. The last civilization never borders the capital, and the Citadel is as far from home as any region.
+- No slivers, and no giant regions.
+
+Borders come from which territories touch. `scripts/ui/map_view.gd` draws the map in true pixels from tileable terrain patterns, with names, garrisons, marching arrows for your battles and incoming raids, and a flash when a region changes hands.
 
 ## Rules the code follows
 

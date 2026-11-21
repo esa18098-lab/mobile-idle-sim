@@ -39,7 +39,7 @@ func _initialize() -> void:
 			Game.advance_seconds(600)
 			_main.show_planet()],
 		["army", func():
-			Game.new_game()
+			Game.new_game(1)
 			_main.show_planet()
 			_main._open_sheet(_main._army_sheet)],
 		["attack", func():
@@ -82,7 +82,7 @@ func _initialize() -> void:
 			DirAccess.remove_absolute(Game.save_path)],
 		["raid_banner", func():
 			_main.close_sheet()
-			Game.new_game()
+			Game.new_game(1)
 			for idx in [2, 4]:
 				Game.sim.region(idx).owner = "You"
 				Game.sim.region(idx).garrison = 3.0
@@ -96,7 +96,7 @@ func _initialize() -> void:
 			_main.show_region(Game.sim.npc_raids[0].target)
 			_main._process(1.0)],
 		["automate", func():
-			Game.new_game()
+			Game.new_game(1)
 			Game.cmd_automation("build", true)
 			Game.cmd_automation("focus", "military")
 			_main.show_planet()
@@ -108,7 +108,7 @@ func _process(_d: float) -> bool:
 	if Game == null:
 		Game = root.get_node_or_null("Game")
 		Game.persist = false
-		Game.new_game()
+		Game.new_game(1)
 	_frame += 1
 	var i := _frame / 6
 	if _frame % 6 == 1 and i < _steps.size():

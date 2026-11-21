@@ -36,8 +36,10 @@ func _ready() -> void:
 		new_game()
 
 
-func new_game() -> void:
-	sim = Sim.new_home_planet(Balance.data)
+func new_game(map_seed: int = -1) -> void:
+	if map_seed < 0:
+		map_seed = int(now_unix()) % 1000000   # a fresh map each new game
+	sim = Sim.new_home_planet(Balance.data, map_seed)
 	_acc = 0.0
 	_emit_changed()
 

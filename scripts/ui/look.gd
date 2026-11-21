@@ -29,7 +29,7 @@ const TERRAIN_COLORS := {
 	"Hills": Color("#8a6f45"),
 	"Mountains": Color("#6c6f76"),
 	"Tundra": Color("#9fb9c4"),
-	"Coast": Color("#4f86a6"),
+	"Coast": Color("#b9a66c"),
 }
 
 const RESOURCE_COLORS := {

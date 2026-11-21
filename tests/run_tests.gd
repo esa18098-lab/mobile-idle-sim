@@ -47,6 +47,8 @@ func _run_all() -> void:
 	_finished("test_ui_matches_sim", test_ui_matches_sim())
 	_finished("test_ui_places_every_building_type", test_ui_places_every_building_type())
 	_finished("test_borders_and_battles", test_borders_and_battles(b))
+	_finished("test_map_rules", test_map_rules(b))
+	_finished("test_ui_map_tap", test_ui_map_tap())
 	_finished("test_raze", test_raze(b))
 	_finished("test_ui_attack_flow", test_ui_attack_flow())
 	_finished("test_conquer_whole_planet", test_conquer_whole_planet(b))
@@ -244,7 +246,7 @@ func _game() -> Node:
 	var g: Node = root.get_node("Game")
 	g.paused = true      # tests drive time themselves
 	g.persist = false    # and never touch the player's save
-	g.new_game()
+	g.new_game(1)   # fixed map so tests repeat
 	return g
 
 
@@ -318,21 +320,95 @@ func test_ui_places_every_building_type() -> bool:
 
 func test_borders_and_battles(b) -> bool:
 	var sim = Sim.new_home_planet(b)
-	_check("borders: Rustfield borders the capital", sim.attack_blocker(2, 1) == "")
-	_check("borders: Highmoor borders the capital", sim.attack_blocker(4, 1) == "")
-	_check("borders: Ironridge is not on your border yet", sim.attack_blocker(3, 1) == "Not on your border")
+	var near: Array = sim.neighbours(1)
+	var far: Array = sim.regions.filter(func(r): return r.index != 1 and not (r.index in near)).map(func(r): return r.index)
+	_check("borders: Rustfield always borders the capital", 2 in near and sim.attack_blocker(2, 1) == "")
+	_check("borders: a region off your border can't be attacked", not far.is_empty() and sim.attack_blocker(far[0], 1) == "Not on your border")
 	_check("borders: can't send more than you have", sim.attack_blocker(2, 21).begins_with("Only"))
-	# Two fronts at once: 12 at Rustfield (loses), 8 at Highmoor (loses badly).
-	_check("battles: two at once", sim.attack(2, 12) and sim.attack(4, 8))
+	var second: int = near.filter(func(n): return n != 2)[0] if near.size() > 1 else -1
+	if second < 0:
+		print("  info  capital has one neighbour on this map; two-front check skipped")
+		return true
+	# Two fronts at once: 12 at Rustfield (loses), 8 at the other border region (loses).
+	_check("battles: two at once", sim.attack(2, 12) and sim.attack(second, 8))
 	_check("battles: no second attack on the same region", sim.attack_blocker(2, 0) == "Battle under way")
 	_check("battles: soldiers left home", is_equal_approx(sim.soldiers, 0.0))
 	var g2: float = sim.region(2).garrison
 	sim.advance(1.0)
 	_check("battles: both resolved within the hour", sim.battles.is_empty())
-	_check("battles: a loss keeps the region theirs", not sim.owns(2) and not sim.owns(4))
+	_check("battles: a loss keeps the region theirs", not sim.owns(2) and not sim.owns(second))
 	var dfn: float = g2 * b.num("def_advantage")
 	_check_close("battles: defenders keep the Lanchester share", sim.region(2).garrison, g2 * Combat.survivor_share(12, dfn))
 	_check("battles: losses are logged", sim.events.filter(func(e): return e.kind == "battle_lost").size() == 2)
+	return true
+
+
+## The sheet's regions on the generated map: the rules hold on every map.
+func test_map_rules(b) -> bool:
+	var bad := 0
+	var slow := 0
+	for seed in range(1, 41):
+		var sim = Sim.new_home_planet(b, seed)
+		var m: Dictionary = sim.map
+		if m.get("attempts", 99) > 10:
+			slow += 1
+		for k in range(2, 13):
+			var civ: String = sim.region(k).civ
+			var earlier: Array = sim.neighbours(k).filter(func(n): return n < k)
+			var same_civ_before: Array = range(2, k).filter(func(j): return sim.region(j).civ == civ)
+			var touches_civ: bool = same_civ_before.is_empty() or sim.neighbours(k).any(func(n): return n in same_civ_before)
+			if earlier.is_empty() or not touches_civ:
+				bad += 1
+		# Symmetric borders, every region on the map.
+		for k in range(1, 13):
+			if not m.anchors.has(k) or sim.neighbours(k).any(func(n): return not (k in sim.neighbours(n))):
+				bad += 1
+	_check("map: on 40 maps every region borders an earlier one and its own civilization", bad == 0, "%d breaks" % bad)
+	var near_bad := 0
+	for seed in range(1, 41):
+		var sm = Sim.new_home_planet(b, seed)
+		var hop := {1: 0}
+		var q: Array = [1]
+		while not q.is_empty():
+			var t: int = q.pop_front()
+			for nb in sm.neighbours(t):
+				if not hop.has(nb):
+					hop[nb] = hop[t] + 1
+					q.append(nb)
+		var far: int = hop.values().max()
+		if hop[12] < far or range(8, 13).any(func(k): return hop[k] < 2):
+			near_bad += 1
+	_check("map: Ostrel never borders the capital and the Citadel is as far as any region", near_bad == 0, "%d maps" % near_bad)
+	_check("map: no map needed more than 10 draws", slow == 0)
+	var a = Sim.new_home_planet(b, 77)
+	var c = Sim.new_home_planet(b, 77)
+	_check("map: the same seed draws the same map", a.map.cells == c.map.cells)
+	_check("map: another seed draws another map", a.map.cells != Sim.new_home_planet(b, 78).map.cells)
+	var loaded = Sim.new_home_planet(b, 1)
+	loaded.apply_dict(JSON.parse_string(JSON.stringify(a.to_dict())))
+	_check("map: a save brings its map back", loaded.map.cells == a.map.cells and loaded.map_seed == 77)
+	var cap_y: int = a.map.anchors[1].y
+	_check("map: the capital sits in the south", a.map.anchors.values().all(func(p): return p.y <= cap_y + 6))
+	return true
+
+
+func test_ui_map_tap() -> bool:
+	var game := _game()
+	var main := _main_screen()
+	main.size = Vector2(360, 640)
+	main.propagate_notification(Control.NOTIFICATION_RESIZED)
+	var mv = main.view.map_view
+	mv.size = Vector2(348, 470)
+	var at: Vector2 = mv._anchor(game.sim, 2)
+	_check("map tap: Rustfield's label point is inside Rustfield", mv.region_at(at) == 2)
+	var ev := InputEventMouseButton.new()
+	ev.button_index = MOUSE_BUTTON_LEFT
+	ev.pressed = false
+	ev.position = at
+	mv._gui_input(ev)
+	_check("map tap: tapping it opens Rustfield", main.view.has_signal("move_soldiers") and main.view.region_idx == 2)
+	_check("map tap: the sea opens nothing", mv.region_at(Vector2(1, 1)) == 0)
+	main.queue_free()
 	return true
 
 
@@ -348,9 +424,14 @@ func test_raze(b) -> bool:
 	_check("raze: salvage paid", sim.res.metal >= 4 * b.num("raze_metal_per_slot") and sim.res.fuel >= 4 * b.num("raze_fuel_per_slot"))
 	_check_close("raze: citizens down by the penalty", sim.display_rates().citizens, cit_before * (1.0 - b.num("raze_output_penalty")))
 	_check_close("raze: annexing everyone slows by the damage", sim.relations_hours(5), annex_before * (1.0 + b.num("raze_relations_damage")))
-	sim.attack(4, 60, "Occupy")
-	sim.advance(0.3)
-	_check("raze: penalty ends at the next capture", sim.owns(4) and is_equal_approx(sim.display_rates().citizens, cit_before))
+	var nxt: int = -1
+	for r in sim.regions:
+		if not sim.owns(r.index) and sim.attack_blocker(r.index, 1) == "" and Combat.soldiers_needed(r.garrison, r.defense_mod, b) <= sim.soldiers:
+			nxt = r.index
+			break
+	sim.attack(nxt, floori(sim.soldiers), "Occupy")
+	sim.advance(1.0)
+	_check("raze: penalty ends at the next capture", nxt > 0 and sim.owns(nxt) and is_equal_approx(sim.display_rates().citizens, cit_before))
 	_check("raze: relations damage stays", sim.relations_hours(5) > annex_before)
 	return true
 
@@ -672,8 +753,8 @@ func test_npc_attacks(b) -> bool:
 		friendly.sign_trade(civ)
 	_check("raid: trade partners don't attack", _force_raid(friendly).is_empty())
 	var talks = _frontier_sim(b)
-	talks.start_annex(3)
-	talks.start_annex(5)
+	for first in [3, 5, 8]:   # one talk with each civilization
+		talks.start_annex(first)
 	_check("raid: civilizations in annexation talks don't attack", _force_raid(talks).is_empty())
 
 	var timed = _frontier_sim(b)
