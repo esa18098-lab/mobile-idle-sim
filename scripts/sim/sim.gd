@@ -10,6 +10,7 @@ extends RefCounted
 const BalanceData := preload("res://scripts/data/balance_data.gd")
 const Combat := preload("res://scripts/sim/combat.gd")
 const MapGen := preload("res://scripts/sim/map_gen.gd")
+const RegionNames := preload("res://scripts/sim/region_names.gd")
 
 const PLAYER := "You"
 const RESOURCES: PackedStringArray = ["citizens", "food", "metal", "fuel", "gold", "rations", "equipment"]
@@ -34,6 +35,10 @@ var razed_count := 0          ## regions razed so far (slows every later annexat
 var raze_penalty := false     ## citizens and gold down until your next capture
 var map := {}                 ## the generated map: cells, adjacency, anchors (see map_gen.gd)
 var map_seed := 1             ## a new game picks one; a save keeps it
+## true: regions take their terrain and names from the map's biomes, and rivers
+## matter in battle. false: the sheet's fixed layout (used to check against it).
+var geography := false
+var tick_hours := TICK_HOURS  ## balance checks run coarser ticks
 var market := {}              ## resource -> {base, supply, demand, sens, recent}
 ## `recent` is the player's recent net sales (units/hr equivalent): selling
 ## pushes prices down, buying pushes them up, and it fades by
@@ -71,9 +76,10 @@ var _rates := {}
 var _type_by_name := {}       ## "Factory: rations" -> "factory_rations"
 
 
-static func new_home_planet(data: BalanceData, p_map_seed: int = 1) -> RefCounted:
+static func new_home_planet(data: BalanceData, p_map_seed: int = 1, p_geography: bool = false) -> RefCounted:
 	var sim = load("res://scripts/sim/sim.gd").new()
 	sim.map_seed = p_map_seed
+	sim.geography = p_geography
 	sim._setup(data)
 	return sim
 
@@ -151,6 +157,54 @@ func _load_map() -> void:
 	for reg in regions:
 		specs.append({"index": reg.index, "civ": reg.civ, "slots": reg.slots})
 	map = MapGen.generate(map_seed, specs)
+	if geography:
+		_apply_biomes()
+
+
+## Regions take their terrain (defense, production) from the map, and a name to fit.
+func _apply_biomes() -> void:
+	var name_rng := RandomNumberGenerator.new()
+	name_rng.seed = map_seed * 31 + 7
+	var used := {}
+	for reg in regions:
+		var terrain: String = map.biome[reg.index]
+		var row: Dictionary = b.find_row("terrain", "Terrain", terrain)
+		reg.terrain = terrain
+		reg.defense_mod = BalanceData.parse_number(row["Defense mod"])
+		reg.mult = {"metal": BalanceData.parse_number(row["Metal"]), "fuel": BalanceData.parse_number(row["Fuel"]),
+			"food": BalanceData.parse_number(row["Food"])}
+		if reg.index != 1:
+			reg.name = RegionNames.make(name_rng, terrain, used)
+	_rates_dirty = true
+
+
+# --- rivers in battle --------------------------------------------------------------
+
+## Share of the border between two regions that runs along a river (0..1).
+func river_share(a: int, b_idx: int) -> float:
+	var key := "%d,%d" % [mini(a, b_idx), maxi(a, b_idx)]
+	return map.get("river_share", {}).get(key, 0.0)
+
+
+## True when every border between `from_owner`'s land and the target is a river.
+func river_crossing(target: int, from_owner: String = PLAYER) -> bool:
+	if not geography:
+		return false
+	var any := false
+	for n in neighbours(target):
+		if region(n).owner == from_owner:
+			any = true
+			if river_share(n, target) < 0.5:
+				return false
+	return any
+
+
+## The defense multiplier an attacker faces: terrain, plus the river if crossing.
+func defense_mult(target: int, from_owner: String = PLAYER) -> float:
+	var m: float = region(target).defense_mod
+	if river_crossing(target, from_owner):
+		m *= 1.0 + b.num("river_crossing_defense")
+	return m
 
 
 # =============================================================================
@@ -195,8 +249,10 @@ func battle_at(region_idx: int) -> Dictionary:
 ## The outcome a battle would have if it started now (for the attack screen).
 func preview_attack(region_idx: int, count: int) -> Dictionary:
 	var reg := region(region_idx)
-	var r := Combat.resolve(count, reg.garrison, reg.defense_mod, b)
-	r.needed = Combat.soldiers_needed(reg.garrison, reg.defense_mod, b)
+	var mult := defense_mult(region_idx)
+	var r := Combat.resolve(count, reg.garrison, mult, b)
+	r.needed = Combat.soldiers_needed(reg.garrison, mult, b)
+	r.river = river_crossing(region_idx)
 	r.salvage = {"metal": reg.slots * b.num("raze_metal_per_slot"), "fuel": reg.slots * b.num("raze_fuel_per_slot")}
 	r.kept = floori(reg.slots * (1.0 - b.num("occupy_rebuild_share")))
 	r.stay = r.survivors * b.num("garrison_left_share") if r.attacker_wins else 0.0
@@ -574,11 +630,12 @@ func attack(region_idx: int, count: int, on_capture: String = "Occupy") -> bool:
 	if attack_blocker(region_idx, count) != "" or not (on_capture in ["Occupy", "Raze"]):
 		return false
 	var reg := region(region_idx)
-	var dfn := Combat.defense_power(reg.garrison, reg.defense_mod, b)
+	var mult := defense_mult(region_idx)
+	var dfn := Combat.defense_power(reg.garrison, mult, b)
 	var minutes := Combat.battle_minutes(count, reg.garrison, count, dfn, b)
 	soldiers -= count
 	battles.append({"region": region_idx, "soldiers": float(count), "started_at": hours,
-		"ends_at": hours + minutes / 60.0, "on_capture": on_capture})
+		"ends_at": hours + minutes / 60.0, "on_capture": on_capture, "mult": mult})
 	_log("Attack %s with %d (battle %.2f min)" % [reg.name, count, minutes])
 	return true
 
@@ -612,7 +669,7 @@ func start_annex(region_idx: int) -> bool:
 func advance(dt_hours: float) -> void:
 	var left := dt_hours
 	while left > 1e-12:
-		var step := minf(TICK_HOURS, left)
+		var step := minf(tick_hours, left)
 		_tick(step)
 		left -= step
 
@@ -877,7 +934,7 @@ func _resolve_events() -> void:
 
 func _finish_battle(battle: Dictionary) -> void:
 	var reg := region(battle.region)
-	var result := Combat.resolve(battle.soldiers, reg.garrison, reg.defense_mod, b)
+	var result := Combat.resolve(battle.soldiers, reg.garrison, battle.get("mult", reg.defense_mod), b)
 	if not result.attacker_wins:
 		reg.garrison = reg.garrison * result.survivor_share
 		_log("Lost at %s: all %d attackers fell, %.0f defenders left" % [reg.name, battle.soldiers, reg.garrison], "battle_lost", battle.region)
@@ -989,7 +1046,7 @@ func auto_attack_target() -> int:
 			continue
 		if annexes.any(func(a): return region(a.region).civ == reg.owner):
 			continue
-		var need := Combat.soldiers_needed(reg.garrison, reg.defense_mod, b)
+		var need := Combat.soldiers_needed(reg.garrison, defense_mult(reg.index), b)
 		if need < best_need:
 			best_need = need
 			best = reg.index
@@ -1003,7 +1060,7 @@ func _auto_attack() -> void:
 	if target < 0:
 		return
 	var reg := region(target)
-	var need := Combat.soldiers_needed(reg.garrison, reg.defense_mod, b)
+	var need := Combat.soldiers_needed(reg.garrison, defense_mult(target), b)
 	train_target = maxf(train_target, need)
 	if soldiers + 1e-6 >= need:
 		attack(target, need, automation.on_capture)
@@ -1069,7 +1126,7 @@ func _maybe_launch_npc_attack() -> void:
 ## Soldiers the standing order would move in to hold against `force`.
 func reinforcement_for(raid: Dictionary) -> int:
 	var reg := region(raid.target)
-	var hold := ceili(raid.force * b.num("attack_margin") / (b.num("def_advantage") * reg.defense_mod) - 1e-9)
+	var hold := ceili(raid.force * b.num("attack_margin") / (b.num("def_advantage") * _raid_mult(raid)) - 1e-9)
 	return clampi(hold - floori(reg.garrison), 0, floori(soldiers + 1e-6))
 
 
@@ -1082,14 +1139,22 @@ func _raid_warning_over(raid: Dictionary) -> void:
 		var n := reinforcement_for(raid)
 		soldiers -= n
 		reg.garrison += n
-	var dfn := Combat.defense_power(reg.garrison, reg.defense_mod, b)
+	var dfn := Combat.defense_power(reg.garrison, _raid_mult(raid), b)
 	var minutes := Combat.battle_minutes(raid.force, reg.garrison, raid.force, dfn, b)
 	raid.battle_ends_at = hours + minutes / 60.0
 
 
+## Your defense against a raid: terrain, plus the river if they come across one.
+func _raid_mult(raid: Dictionary) -> float:
+	var m: float = region(raid.target).defense_mod
+	if geography and river_share(raid.from, raid.target) >= 0.5:
+		m *= 1.0 + b.num("river_crossing_defense")
+	return m
+
+
 func _finish_raid(raid: Dictionary) -> void:
 	var reg := region(raid.target)
-	var dfn := Combat.defense_power(reg.garrison, reg.defense_mod, b)
+	var dfn := Combat.defense_power(reg.garrison, _raid_mult(raid), b)
 	var share := Combat.survivor_share(raid.force, dfn)
 	if dfn >= raid.force:
 		reg.garrison *= share
@@ -1147,7 +1212,7 @@ func to_dict() -> Dictionary:
 	for k in market:
 		recent[k] = market[k].recent
 	return {
-		"version": SAVE_VERSION, "map_seed": map_seed, "hours": hours, "res": res.duplicate(), "soldiers": soldiers,
+		"version": SAVE_VERSION, "map_seed": map_seed, "geography": geography, "hours": hours, "res": res.duplicate(), "soldiers": soldiers,
 		"train_target": train_target, "buildings": buildings.duplicate(true), "regions": regs,
 		"civs": civ_state, "queue": queue.duplicate(true), "battles": battles.duplicate(true),
 		"annexes": annexes.duplicate(true), "events": _events_to_save(),
@@ -1169,8 +1234,9 @@ func _events_to_save() -> Array:
 
 
 func apply_dict(d: Dictionary) -> void:
-	if int(d.get("map_seed", map_seed)) != map_seed:
+	if int(d.get("map_seed", map_seed)) != map_seed or bool(d.get("geography", false)) != geography:
 		map_seed = int(d.map_seed)
+		geography = bool(d.get("geography", false))
 		_load_map()
 	hours = float(d.hours)
 	for k in d.res:
@@ -1199,7 +1265,7 @@ func apply_dict(d: Dictionary) -> void:
 	battles = []
 	for battle in d.battles:
 		battles.append({"region": int(battle.region), "soldiers": float(battle.soldiers), "started_at": float(battle.started_at),
-			"ends_at": float(battle.ends_at), "on_capture": battle.on_capture})
+			"ends_at": float(battle.ends_at), "on_capture": battle.on_capture, "mult": float(battle.get("mult", 1.0))})
 	annexes = []
 	for a in d.annexes:
 		annexes.append({"region": int(a.region), "ends_at": float(a.ends_at), "paid": bool(a.paid)})

@@ -73,8 +73,11 @@ System: bonus points on small bodies,6,,system_bonus_points
 System: rival homeworld garrison growth per hr,0.20%,,rival_growth_per_hr
 System: average building levels gained per region taken,0.05,,level_gain_per_region
 System: target completion window (days),7–10,,system_target_days
-NPC attacks: average minutes of play between attacks,60,"Only while the app is open; each gap is between half and 1.5× this",npc_attack_interval_min
-NPC attacks: share of the source region's garrison sent,50%,"Attacks come from an enemy region on your border. A repelled attack thins that garrison",npc_attack_share
+NPC attacks: average minutes of play between attacks,60,Only while the app is open; each gap is between half and 1.5× this,npc_attack_interval_min
+NPC attacks: share of the source region's garrison sent,50%,Attacks come from an enemy region on your border. A repelled attack thins that garrison,npc_attack_share
 NPC attacks: gold paid per attacker when you repel,0.75,Same as the annexation price per defender,npc_repel_gold_per_attacker
 NPC attacks: regions you can lose per absence,1,"Past this, attacks while you're away fail",npc_offline_loss_cap
 Storage: hours of production a stockpile holds,8,"Citizens, food, metal, fuel and gold; scales with your economy",storage_cap_hours
+River crossing: defender bonus when every border you attack across is a river,20%,Only counts if you have no dry border with the region. Applies to NPC raids across rivers too,river_crossing_defense
+Generated maps: shortest cautious playthrough allowed (hrs),4.6,Each new map is played once in fast-forward; maps outside the window are redrawn. 60 maps averaged 4.91 h,map_cautious_hours_min
+Generated maps: longest cautious playthrough allowed (hrs),5.6,The sheet's fixed layout takes 5.1 h; the 6 h cap still applies,map_cautious_hours_max

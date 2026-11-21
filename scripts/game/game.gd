@@ -5,6 +5,7 @@ extends Node
 ## The UI calls the cmd_* methods. It never edits sim state itself.
 
 const Sim := preload("res://scripts/sim/sim.gd")
+const PlanetFactory := preload("res://scripts/sim/planet_factory.gd")
 const SaveSystem := preload("res://scripts/game/save_system.gd")
 const Server := preload("res://scripts/game/server.gd")
 const Notifier := preload("res://scripts/game/notifier.gd")
@@ -36,10 +37,15 @@ func _ready() -> void:
 		new_game()
 
 
-func new_game(map_seed: int = -1) -> void:
+## A new game on a fresh, balance-checked map. Tests pass a seed and
+## `geography = false` to get the sheet's fixed layout instead.
+func new_game(map_seed: int = -1, geography: bool = true) -> void:
 	if map_seed < 0:
-		map_seed = int(now_unix()) % 1000000   # a fresh map each new game
-	sim = Sim.new_home_planet(Balance.data, map_seed)
+		map_seed = int(now_unix()) % 1000000
+	if geography:
+		sim = PlanetFactory.new_game(Balance.data, map_seed).sim
+	else:
+		sim = Sim.new_home_planet(Balance.data, map_seed)
 	_acc = 0.0
 	_emit_changed()
 

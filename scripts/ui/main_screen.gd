@@ -539,6 +539,8 @@ func _attack_sheet(region_idx: int) -> void:
 		lines.append("%s survive, %s stay as garrison" % [Look.num(p.survivors), Look.num(p.stay)])
 	else:
 		lines.append("All attackers lost; %s defenders left" % Look.num(p.survivors))
+	if p.river:
+		lines.append("River crossing: their defense +%d%%" % roundi(sim.b.num("river_crossing_defense") * 100))
 	var pv := Look.label("\n".join(lines), Look.FONT_SIZE, Look.ACCENT if p.attacker_wins else Look.BAD)
 	pv.name = "preview"
 	_sheet_box.add_child(pv)

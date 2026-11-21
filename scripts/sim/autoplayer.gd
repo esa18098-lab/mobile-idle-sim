@@ -19,6 +19,7 @@ enum Mode { STRICT, EAGER }
 enum Placement { FIRST_FREE, BEST_TERRAIN }
 
 const STEP_HOURS := 10.0 / 3600.0  ## the autoplayer checks the game every 10 seconds
+var step_hours := STEP_HOURS        ## map balance checks look less often
 const MAX_HOURS := 48.0
 
 var sim
@@ -78,7 +79,7 @@ func play() -> float:
 
 
 func _need(idx: int) -> int:
-	return Combat.soldiers_needed(sim.region(idx).garrison, sim.region(idx).defense_mod, sim.b)
+	return Combat.soldiers_needed(sim.region(idx).garrison, sim.defense_mult(idx), sim.b)
 
 
 ## Eager only: start training for the next conquest (or talks for the next
@@ -88,7 +89,7 @@ func _prepare_next_during_battle(next_idx: int) -> void:
 	if sim.civs[nxt.civ].method == "Annex":
 		sim.start_annex(next_idx)   # relations can warm up while the battle runs
 		return
-	sim.set_train_target(Combat.soldiers_needed(nxt.garrison, nxt.defense_mod, sim.b))
+	sim.set_train_target(Combat.soldiers_needed(nxt.garrison, sim.defense_mult(next_idx), sim.b))
 
 
 ## Queue buildings and upgrades so the economy matches the build-plan row.
@@ -168,6 +169,6 @@ func _queued_upgrades() -> int:
 
 func _wait(done: Callable) -> void:
 	while not done.call():
-		sim.advance(STEP_HOURS)
+		sim.advance(step_hours)
 		if sim.hours >= MAX_HOURS:
 			return

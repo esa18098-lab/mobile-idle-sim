@@ -63,7 +63,8 @@ On the raze paths, single regions can drift up to 6%. Razing slows annexation ta
 balance/        CSVs exported from the sheet (one per tab). The game reads these and nothing else for numbers.
 scripts/data/   balance_data.gd: loads the CSVs and looks values up by key.
 scripts/sim/    The sim core. Pure GDScript, no scenes, no clock of its own.
-                  map_gen.gd: the procedural home-planet map (seeded; a save keeps only the seed).
+                  map_gen.gd: the procedural map and its geography (seeded; a save keeps only the seed).
+                  planet_factory.gd: new games, balance-checked. region_names.gd: names that fit the biome.
                   sim.gd: home-planet state, commands, 1-second ticks. combat.gd: battle math.
                   autoplayer.gd: plays the default path for tests (cautious or attentive).
 scripts/game/   game.gd (autoload Game): the only code that reads the clock. Feeds the sim real time, passes UI
@@ -84,14 +85,27 @@ tests/          Headless tests and golden numbers copied from the sheet.
 
 ## The map
 
-Every new game draws its own home-planet map. A noisy island is grown into 12 territories, and the sheet's 12 regions are placed on them. Names, slots, terrain, garrisons and owners all come from the sheet, so the balance doesn't change. The generator keeps four rules, and draws again (with the next seed) when a map can't meet them:
+Every new game draws its own home-planet map with real geography:
 
-- Every region on the default path borders one you'd already hold.
-- Each civilization's land is one territory.
-- Regions are placed outward from the capital in the south. The last civilization never borders the capital, and the Citadel is as far from home as any region.
-- No slivers, and no giant regions.
+- **Elevation, temperature and moisture.** Cold in the north, hot in the south. Together they give every cell a biome: Plains, Forest, Hills, Mountains, Tundra, Coast or **Desert**. Desert is new: fuel-rich, little food, and harder to attack into.
+- **Lakes** sit in low basins. They are water, so regions on opposite shores don't share a border, which creates choke points.
+- **Rivers** run downhill from the highlands to the sea or a lake. Territories grow slowly across rivers and up ridges, so those tend to become borders.
+- **River crossings** give the defender `river_crossing_defense` (+20%) when every border you hold with a region is a river. One dry border removes the bonus. NPC raids across a river face it too. With terrain, that makes two combat modifiers, inside the design's limit of three.
 
-Borders come from which territories touch. `scripts/ui/map_view.gd` draws the map in true pixels from tileable terrain patterns, with names, garrisons, marching arrows for your battles and incoming raids, and a flash when a region changes hands.
+A region's biome (the one most of its land has) is its terrain: defense and production come from the sheet's terrain table. Names fit the biome. Garrisons, slots and owners still come from the sheet. The capital is always Plains.
+
+The generator keeps these rules, and draws again with the next seed when a map can't meet them:
+
+- every region on the default path borders one you'd already hold
+- each civilization's land is connected
+- regions are placed outward from a southern capital, Ostrel never borders the capital, and the Citadel is as far from home as any region
+- at least four biomes, at most three mountain regions, and no slivers or giant regions
+
+**Balance check:** `scripts/sim/planet_factory.gd` plays each new map once with the cautious autoplayer, in fast-forward, and redraws it if the time falls outside `map_cautious_hours_min` to `map_cautious_hours_max` (4.6–5.6 h). Over 60 maps the spread was 4.67–5.32 h, with a mean of 4.91 h, so almost every map passes on the first try. The check takes about 0.4 s per new game on a desktop.
+
+**Sheet layout:** `Sim.new_home_planet(data, seed, false)` keeps the sheet's own terrain and names and ignores rivers. Every test that compares against the sheet uses it.
+
+`scripts/ui/map_view.gd` draws the map in true pixels: tileable terrain patterns, dunes, trees, lakes, rivers, owner-coloured frontiers, names and garrisons, marching arrows for battles and raids, and a flash when a region changes hands.
 
 ## Rules the code follows
 

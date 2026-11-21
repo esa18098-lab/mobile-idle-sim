@@ -14,10 +14,25 @@ extends RefCounted
 ##     region is, the further from home it sits; the last civilization never
 ##     borders the capital and the last region is as far away as any.
 ## Maps that can't meet that are thrown away and drawn again with the next seed.
+##
+## Geography: an elevation field (high in the middle, falling to the sea), a
+## temperature gradient (cold north, hot south) and a moisture field give each
+## cell a biome. Lakes sit in low basins and are water, so regions on opposite
+## shores don't border. Rivers run downhill from the highlands to the sea or a
+## lake. Growth is slower across rivers and ridges, so territories tend to end
+## there and those become borders. A region's biome is the one most of its
+## land has; it sets the region's terrain (defense, production).
 
 const W := 58          ## cells across
 const H := 72          ## cells down
 const SEA := 0
+
+## water[] values
+const LAND := 0
+const OCEAN := 1
+const LAKE := 2
+
+const BIOMES: PackedStringArray = ["Plains", "Forest", "Hills", "Mountains", "Tundra", "Coast", "Desert"]
 
 ## regions: [{index, civ}] from the balance data, capital = index 1.
 static func generate(seed: int, regions: Array) -> Dictionary:
@@ -34,17 +49,20 @@ static func generate(seed: int, regions: Array) -> Dictionary:
 static func _try(s: int, regions: Array) -> Dictionary:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = s
+	var f := _fields(s)
 	var land := _island(s)
+	var lake := _lakes(rng, land, f.elev)
+	var river := _rivers(rng, land, lake, f.elev)
 	var land_cells: Array = []
 	for i in land.size():
 		if land[i]:
 			land_cells.append(i)
 	var n := regions.size()
-	if land_cells.size() < n * 120:
+	if land_cells.size() < n * 110:
 		return {}
 
 	var seeds := _spread_seeds(rng, land_cells, n)
-	var owner := _grow(s, land, seeds, [])
+	var owner := _grow(s, land, seeds, [], river, f.elev)
 	var adj := _adjacency(owner, n)
 	if not _shapes_ok(owner, adj, n):
 		return {}
@@ -59,17 +77,23 @@ static func _try(s: int, regions: Array) -> Dictionary:
 	var weights: Array = []
 	for t in n:
 		weights.append(sqrt(float(regions[order.find(t)].slots) / 5.5))
-	var owner2 := _grow(s, land, seeds, weights)
+	var owner2 := _grow(s, land, seeds, weights, river, f.elev)
 	var adj2 := _adjacency(owner2, n)
 	if _shapes_ok(owner2, adj2, n) and _rules_hold(adj2, order, regions) and _far_enough(order, _hops(adj2, order[0]), regions):
 		owner = owner2
 		adj = adj2
 
-	# Relabel cells with sheet region indexes (1..n); 0 stays sea.
+	# Relabel cells with sheet region indexes (1..n); 0 is water.
 	var cells := PackedInt32Array()
 	cells.resize(W * H)
+	var water := PackedByteArray()
+	water.resize(W * H)
+	var rivers := PackedByteArray()
+	rivers.resize(W * H)
 	for i in W * H:
 		cells[i] = SEA if owner[i] < 0 else regions[order.find(owner[i])].index
+		water[i] = LAKE if lake[i] else (OCEAN if owner[i] < 0 else LAND)
+		rivers[i] = 1 if river[i] and owner[i] >= 0 else 0
 	var by_region := {}
 	for t in n:
 		var idx: int = regions[order.find(t)].index
@@ -77,7 +101,47 @@ static func _try(s: int, regions: Array) -> Dictionary:
 		for other in adj[t]:
 			by_region[idx].append(regions[order.find(other)].index)
 		by_region[idx].sort()
-	return {"w": W, "h": H, "cells": cells, "adjacency": by_region, "anchors": _anchors(cells, regions)}
+	var biome := _region_biomes(cells, water, f, regions)
+	if not _biomes_ok(biome):
+		return {}
+	return {"w": W, "h": H, "cells": cells, "water": water, "river": rivers,
+		"trees": _trees(cells, water, rivers, f, biome),
+		"adjacency": by_region, "anchors": _anchors(cells, regions),
+		"biome": biome, "river_share": _river_shares(cells, rivers),
+		"lakes": _count_lakes(water), "rivers": _count_rivers(rivers)}
+
+
+# --- fields -------------------------------------------------------------------
+
+## Elevation (0..1, highest inland), temperature (0 north .. 1 south) and moisture.
+static func _fields(s: int) -> Dictionary:
+	var en := FastNoiseLite.new()
+	en.seed = s + 11
+	en.frequency = 0.05
+	en.fractal_octaves = 4
+	var tn := FastNoiseLite.new()
+	tn.seed = s + 12
+	tn.frequency = 0.04
+	var mn := FastNoiseLite.new()
+	mn.seed = s + 13
+	mn.frequency = 0.045
+	mn.fractal_octaves = 3
+	var elev := PackedFloat32Array()
+	var temp := PackedFloat32Array()
+	var moist := PackedFloat32Array()
+	elev.resize(W * H)
+	temp.resize(W * H)
+	moist.resize(W * H)
+	for y in H:
+		for x in W:
+			var dx := (x - W * 0.5) / (W * 0.5)
+			var dy := (y - H * 0.5) / (H * 0.5)
+			var inland := 1.0 - clampf(sqrt(dx * dx + dy * dy), 0.0, 1.0)
+			var i := y * W + x
+			elev[i] = clampf(inland * 0.75 + (en.get_noise_2d(x, y) + 1.0) * 0.35 - 0.1, 0.0, 1.0)
+			temp[i] = clampf(float(y) / H * 0.9 + tn.get_noise_2d(x, y) * 0.35 + 0.05, 0.0, 1.0)
+			moist[i] = clampf((mn.get_noise_2d(x, y) + 1.0) * 0.5, 0.0, 1.0)
+	return {"elev": elev, "temp": temp, "moist": moist}
 
 
 # --- island ------------------------------------------------------------------
@@ -130,6 +194,256 @@ static func _largest_component(land: Array) -> Array:
 	return keep
 
 
+# --- lakes and rivers -------------------------------------------------------------
+
+## One to three lakes in low inland basins. A lake that would cut the land in two
+## is dropped. Lake cells stop being land.
+static func _lakes(rng: RandomNumberGenerator, land: Array, elev: PackedFloat32Array) -> Array:
+	var lake: Array = []
+	lake.resize(W * H)
+	lake.fill(false)
+	var want := rng.randi_range(1, 3)
+	var made := 0
+	for attempt in 40:
+		if made >= want:
+			break
+		var c := rng.randi_range(0, W * H - 1)
+		if not land[c] or _near_sea(land, c, 5) or elev[c] > 0.62:
+			continue
+		var size := rng.randi_range(14, 34)
+		var blob: Array = [c]
+		var in_blob := {c: true}
+		while blob.size() < size:
+			var from: int = blob[rng.randi_range(0, blob.size() - 1)]
+			var nbs := _neighbours4(from)
+			var nb: int = nbs[rng.randi_range(0, nbs.size() - 1)]
+			if land[nb] and not in_blob.has(nb) and not _near_sea(land, nb, 3):
+				blob.append(nb)
+				in_blob[nb] = true
+			elif rng.randf() < 0.05:
+				break
+		if blob.size() < 10:
+			continue
+		for b in blob:
+			land[b] = false
+		if _connected(land):
+			for b in blob:
+				lake[b] = true
+			made += 1
+		else:
+			for b in blob:
+				land[b] = true
+	return lake
+
+
+## Rivers start high and run downhill to the sea or a lake.
+static func _rivers(rng: RandomNumberGenerator, land: Array, lake: Array, elev: PackedFloat32Array) -> Array:
+	var river: Array = []
+	river.resize(W * H)
+	river.fill(false)
+	var want := rng.randi_range(2, 4)
+	var made := 0
+	for attempt in 60:
+		if made >= want:
+			break
+		var c := rng.randi_range(0, W * H - 1)
+		if not land[c] or river[c] or elev[c] < 0.62 or _near_river(river, c, 6):
+			continue
+		var path: Array = [c]
+		var seen := {c: true}
+		var reached := false
+		while path.size() < 90:
+			var cur: int = path[-1]
+			var best := -1
+			var best_e := INF
+			for nb in _neighbours4(cur):
+				if seen.has(nb):
+					continue
+				var e := elev[nb] + rng.randf() * 0.04
+				if e < best_e:
+					best_e = e
+					best = nb
+			if best < 0:
+				break
+			if not land[best] or river[best]:
+				reached = true   # sea, lake, or joined another river
+				break
+			path.append(best)
+			seen[best] = true
+		if reached and path.size() >= 9:
+			for p in path:
+				river[p] = true
+			made += 1
+	return river
+
+
+static func _near_sea(land: Array, c: int, r: int) -> bool:
+	var cx := c % W
+	var cy := c / W
+	for y in range(cy - r, cy + r + 1):
+		for x in range(cx - r, cx + r + 1):
+			if x < 0 or y < 0 or x >= W or y >= H or not land[y * W + x]:
+				return true
+	return false
+
+
+static func _near_river(river: Array, c: int, r: int) -> bool:
+	var cx := c % W
+	var cy := c / W
+	for y in range(maxi(0, cy - r), mini(H, cy + r + 1)):
+		for x in range(maxi(0, cx - r), mini(W, cx + r + 1)):
+			if river[y * W + x]:
+				return true
+	return false
+
+
+static func _connected(land: Array) -> bool:
+	var total := 0
+	var start := -1
+	for i in land.size():
+		if land[i]:
+			total += 1
+			start = i
+	if start < 0:
+		return false
+	var seen := {start: true}
+	var q: Array = [start]
+	var head := 0
+	while head < q.size():
+		var c: int = q[head]
+		head += 1
+		for nb in _neighbours4(c):
+			if land[nb] and not seen.has(nb):
+				seen[nb] = true
+				q.append(nb)
+	return seen.size() == total
+
+
+# --- biomes ---------------------------------------------------------------------
+
+static func cell_biome(elev: float, temp: float, moist: float) -> String:
+	if elev > 0.80:
+		return "Mountains"
+	if elev > 0.66:
+		return "Hills"
+	if temp < 0.22:
+		return "Tundra"
+	if temp > 0.56 and moist < 0.46:
+		return "Desert"
+	if moist > 0.53:
+		return "Forest"
+	return "Plains"
+
+
+## A region's biome is the one most of its land has. Low land along a long
+## shore is Coast. The capital is always Plains: your homeland is farmland.
+static func _region_biomes(cells: PackedInt32Array, water: PackedByteArray, f: Dictionary, regions: Array) -> Dictionary:
+	var votes := {}
+	var shore := {}
+	var area := {}
+	for i in W * H:
+		var r: int = cells[i]
+		if r == SEA:
+			continue
+		var b := cell_biome(f.elev[i], f.temp[i], f.moist[i])
+		if not votes.has(r):
+			votes[r] = {}
+			shore[r] = 0
+			area[r] = 0
+		votes[r][b] = votes[r].get(b, 0) + 1
+		area[r] += 1
+		for nb in _neighbours4(i):
+			if water[nb] == OCEAN:
+				shore[r] += 1
+				break
+	var out := {}
+	for r in votes:
+		var best := ""
+		for b in votes[r]:
+			if best == "" or votes[r][b] > votes[r][best]:
+				best = b
+		if best in ["Plains", "Forest", "Desert"] and float(shore[r]) / area[r] > 0.17:
+			best = "Coast"
+		out[r] = best
+	out[regions[0].index] = "Plains"
+	return out
+
+
+## Variety without extremes: at least four biomes, at most three mountain regions.
+static func _biomes_ok(biome: Dictionary) -> bool:
+	var kinds := {}
+	var mountains := 0
+	for r in biome:
+		kinds[biome[r]] = true
+		if biome[r] == "Mountains":
+			mountains += 1
+	return kinds.size() >= 4 and mountains <= 3
+
+
+## Decoration: tree cells in wet places (forest regions are thick with them).
+static func _trees(cells: PackedInt32Array, water: PackedByteArray, rivers: PackedByteArray, f: Dictionary, biome: Dictionary) -> PackedByteArray:
+	var t := PackedByteArray()
+	t.resize(W * H)
+	for i in W * H:
+		if cells[i] == SEA or rivers[i] == 1:
+			continue
+		var b: String = biome[cells[i]]
+		var m: float = f.moist[i]
+		if b == "Forest" and m > 0.45:
+			t[i] = 1
+		elif b in ["Plains", "Hills", "Coast"] and m > 0.62:
+			t[i] = 1
+	return t
+
+
+## For each pair of bordering regions, the share of their border that runs
+## along a river ("a,b" with a < b).
+static func _river_shares(cells: PackedInt32Array, rivers: PackedByteArray) -> Dictionary:
+	var total := {}
+	var wet := {}
+	for i in W * H:
+		var a: int = cells[i]
+		if a == SEA:
+			continue
+		for nb in _neighbours4(i):
+			var bb: int = cells[nb]
+			if bb == SEA or bb <= a:
+				continue
+			var key := "%d,%d" % [a, bb]
+			total[key] = total.get(key, 0) + 1
+			if rivers[i] == 1 or rivers[nb] == 1:
+				wet[key] = wet.get(key, 0) + 1
+	var out := {}
+	for k in total:
+		out[k] = float(wet.get(k, 0)) / total[k]
+	return out
+
+
+static func _count_lakes(water: PackedByteArray) -> int:
+	var seen := {}
+	var n := 0
+	for i in W * H:
+		if water[i] != LAKE or seen.has(i):
+			continue
+		n += 1
+		var q: Array = [i]
+		seen[i] = true
+		while not q.is_empty():
+			var c: int = q.pop_back()
+			for nb in _neighbours4(c):
+				if water[nb] == LAKE and not seen.has(nb):
+					seen[nb] = true
+					q.append(nb)
+	return n
+
+
+static func _count_rivers(rivers: PackedByteArray) -> int:
+	var n := 0
+	for v in rivers:
+		n += v
+	return n
+
+
 # --- territories -----------------------------------------------------------------
 
 ## Best-candidate sampling: each new seed is the one of a handful of random
@@ -152,7 +466,8 @@ static func _spread_seeds(rng: RandomNumberGenerator, land_cells: Array, n: int)
 
 
 ## Multi-source growth over noisy ground (Dijkstra). weights > 1 grow faster.
-static func _grow(s: int, land: Array, seeds: Array, weights: Array) -> Array:
+## Crossing a river or climbing a ridge is slow, so borders tend to form there.
+static func _grow(s: int, land: Array, seeds: Array, weights: Array, river: Array, elev: PackedFloat32Array) -> Array:
 	var rough := FastNoiseLite.new()
 	rough.seed = s + 1
 	rough.frequency = 0.18
@@ -178,6 +493,9 @@ static func _grow(s: int, land: Array, seeds: Array, weights: Array) -> Array:
 			if not land[nb]:
 				continue
 			var step := (1.0 + 1.4 * (rough.get_noise_2d(nb % W, nb / W) + 1.0)) / speed
+			if river[nb] != river[c]:
+				step += 9.0
+			step += maxf(0.0, elev[nb] - elev[c]) * 40.0
 			var nc: float = cost[c] + step
 			if nc < cost[nb]:
 				cost[nb] = nc

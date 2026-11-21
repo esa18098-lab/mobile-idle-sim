@@ -45,7 +45,8 @@ const REQUIRED_INPUT_KEYS: PackedStringArray = [
 	"level_gain_per_region", "system_target_days",
 	"market_price_floor", "market_price_ceiling", "market_recovery_per_hr",
 	"npc_attack_interval_min", "npc_attack_share", "npc_repel_gold_per_attacker",
-	"npc_offline_loss_cap", "storage_cap_hours",
+	"npc_offline_loss_cap", "storage_cap_hours", "river_crossing_defense",
+	"map_cautious_hours_min", "map_cautious_hours_max",
 ]
 
 const REQUIRED_BUILDING_KEYS: PackedStringArray = [

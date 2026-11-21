@@ -13,7 +13,13 @@ const CELL := 6            ## screen pixels per map cell
 const TILE := 24           ## terrain pattern size (tileable)
 const SEA := Color("#14304a")
 const SEA_LIGHT := Color("#22476a")
+const LAKE := Color("#2b5f8a")
+const LAKE_LIGHT := Color("#4a83b0")
+const RIVER := Color("#3f86c0")
+const RIVER_LIGHT := Color("#8cc3e6")
 const FOAM := Color("#cfe3ea")
+const TREE_DARK := Color("#1f3d22")
+const TREE_LIGHT := Color("#4f8a46")
 const LINE := Color("#0d1015")
 const FLASH_SECONDS := 0.9
 
@@ -83,14 +89,20 @@ func _render(sim) -> Image:
 	var cells: PackedInt32Array = sim.map.cells
 	var img := Image.create(W * CELL, H * CELL, false, Image.FORMAT_RGBA8)
 	var sea := _pattern("sea", "")
+	var lake := _pattern("lake", "")
+	var water: PackedByteArray = sim.map.get("water", PackedByteArray())
 	for y in H:
 		for x in W:
 			var r: int = cells[y * W + x]
 			var src: Image = sea
-			if r != 0:
+			if r == 0 and not water.is_empty() and water[y * W + x] == Sim.MapGen.LAKE:
+				src = lake
+			elif r != 0:
 				var reg: Dictionary = sim.region(r)
 				src = _pattern(reg.terrain, reg.owner)
 			img.blit_rect(src, Rect2i((x * CELL) % TILE, (y * CELL) % TILE, CELL, CELL), Vector2i(x * CELL, y * CELL))
+	_draw_rivers(sim, img)
+	_draw_trees(sim, img)
 	# Borders and shoreline, drawn on each cell's own side of the edge.
 	for y in H:
 		for x in W:
@@ -108,7 +120,9 @@ func _render(sim) -> Image:
 					continue
 				var col: Color
 				if other == 0:
-					col = FOAM
+					var oi: int = ny * W + nx if not (nx < 0 or ny < 0 or nx >= W or ny >= H) else -1
+					var is_lake: bool = oi >= 0 and not water.is_empty() and water[oi] == Sim.MapGen.LAKE
+					col = LAKE_LIGHT if is_lake else FOAM
 				elif sim.region(other).owner != sim.region(r).owner:
 					col = mine          # a frontier: each side shows its owner's colour
 				elif d.x < 0 or d.y < 0:
@@ -125,6 +139,56 @@ func _render(sim) -> Image:
 	return img
 
 
+## Rivers: a 2-pixel channel from each river cell's middle toward its river
+## neighbours (and into the sea or a lake at the mouth).
+func _draw_rivers(sim, img: Image) -> void:
+	var river: PackedByteArray = sim.map.get("river", PackedByteArray())
+	if river.is_empty():
+		return
+	var W: int = sim.map.w
+	var H: int = sim.map.h
+	var half := CELL / 2 - 1
+	for i in river.size():
+		if river[i] == 0:
+			continue
+		var x := i % W
+		var y := i / W
+		var c := Vector2i(x * CELL + half, y * CELL + half)
+		img.fill_rect(Rect2i(c, Vector2i(2, 2)), RIVER)
+		for d in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+			var nx: int = x + d.x
+			var ny: int = y + d.y
+			if nx < 0 or ny < 0 or nx >= W or ny >= H:
+				continue
+			var j := ny * W + nx
+			if river[j] == 1 or sim.map.cells[j] == 0:
+				var a: Vector2i = c
+				var b: Vector2i = c + d * CELL
+				var rect := Rect2i(Vector2i(mini(a.x, b.x), mini(a.y, b.y)), Vector2i(absi(b.x - a.x) + 2, absi(b.y - a.y) + 2))
+				img.fill_rect(rect, RIVER)
+		img.set_pixelv(c, RIVER_LIGHT)
+
+
+## Little pixel trees in wet ground.
+func _draw_trees(sim, img: Image) -> void:
+	var trees: PackedByteArray = sim.map.get("trees", PackedByteArray())
+	if trees.is_empty():
+		return
+	var W: int = sim.map.w
+	for i in trees.size():
+		if trees[i] == 0:
+			continue
+		var x := (i % W) * CELL + 1 + (i * 7) % 2
+		var y := (i / W) * CELL + 1
+		var mine: bool = sim.region(sim.map.cells[i]).owner == Sim.PLAYER
+		var dark := TREE_DARK if mine else TREE_DARK.darkened(0.3)
+		var light := TREE_LIGHT if mine else TREE_LIGHT.lerp(Look.OWNER_COLORS.get(sim.region(sim.map.cells[i]).owner, Look.DIM), 0.18).darkened(0.3)
+		img.fill_rect(Rect2i(x, y + 1, 3, 2), dark)
+		img.fill_rect(Rect2i(x + 1, y, 1, 1), light)
+		img.set_pixel(x, y + 1, light)
+		img.set_pixel(x + 1, y + 3, Color("#3a2a1a"))
+
+
 func _owner_color(sim, r: int) -> Color:
 	return Look.OWNER_COLORS.get(sim.region(r).owner, Look.LINE)
 
@@ -135,7 +199,7 @@ func _pattern(terrain: String, owner: String) -> Image:
 	if _patterns.has(key):
 		return _patterns[key]
 	var img := Image.create(TILE, TILE, false, Image.FORMAT_RGBA8)
-	var base: Color = SEA if terrain == "sea" else Look.TERRAIN_COLORS.get(terrain, Look.PANEL)
+	var base: Color = SEA if terrain == "sea" else (LAKE if terrain == "lake" else Look.TERRAIN_COLORS.get(terrain, Look.PANEL))
 	for y in TILE:
 		for x in TILE:
 			var h := ((x * 73856093) ^ (y * 19349663) ^ (x * y * 83492791)) & 1023
@@ -144,6 +208,15 @@ func _pattern(terrain: String, owner: String) -> Image:
 				"sea":
 					if y % 6 == 2 and (x + y) % 12 < 3:
 						c = SEA_LIGHT
+				"lake":
+					if y % 8 == 3 and (x * 2 + y) % 16 < 3:
+						c = LAKE_LIGHT
+				"Desert":
+					var wave := int(round(sin((x + (y / 6) * 5) * 0.52) * 1.5))
+					if (y + wave) % 6 == 0:
+						c = base.lightened(0.18)
+					elif (y + wave) % 6 == 1:
+						c = base.darkened(0.12)
 				"Plains":
 					if h % 17 == 0:
 						c = base.lightened(0.25)
@@ -170,7 +243,7 @@ func _pattern(terrain: String, owner: String) -> Image:
 				"Coast":
 					if h % 13 == 0:
 						c = base.lightened(0.2)
-			if terrain != "sea" and owner != "You":
+			if terrain != "sea" and terrain != "lake" and owner != "You":
 				c = c.lerp(Look.OWNER_COLORS.get(owner, Look.DIM), 0.18).darkened(0.3)
 			img.set_pixel(x, y, c)
 	_patterns[key] = img

@@ -5,3 +5,4 @@ Hills,1.25,1.2,1,1,
 Mountains,1.5,1.3,1,0.7,
 Tundra,1.1,1,1.25,1,
 Coast,1,1,1,1.2,Easy landing site
+Desert,1.1,1,1.4,0.5,"Fuel-rich and barren, hard to cross"

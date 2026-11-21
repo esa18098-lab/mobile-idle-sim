@@ -26,10 +26,11 @@ const OWNER_COLORS := {
 const TERRAIN_COLORS := {
 	"Plains": Color("#6f8f3f"),
 	"Forest": Color("#3e6b3a"),
-	"Hills": Color("#8a6f45"),
+	"Hills": Color("#7a553a"),
 	"Mountains": Color("#6c6f76"),
 	"Tundra": Color("#9fb9c4"),
-	"Coast": Color("#b9a66c"),
+	"Coast": Color("#d2c48e"),
+	"Desert": Color("#d4a85c"),
 }
 
 const RESOURCE_COLORS := {

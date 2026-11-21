@@ -60,6 +60,11 @@ func rebuild() -> void:
 		for i in reg.slots:
 			grid.add_child(_slot_tile(Icon.make(Look.DIM, "?", 2, true), "Held", reg.owner.split(" ")[0], "", true, Callable()))
 		add_child(Look.label("Garrison %s · defense ×%.2f with home advantage ×%.2f" % [Look.num(reg.garrison), reg.defense_mod, sim.b.num("def_advantage")], Look.FONT_SIZE))
+		if sim.river_crossing(region_idx):
+			var rv := Look.label("Every border you hold with it is a river: their defense +%d%%. A dry border removes it." % roundi(sim.b.num("river_crossing_defense") * 100), Look.FONT_SMALL, Look.OWNER_COLORS["Veyra Compact"])
+			rv.name = "river"
+			rv.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			add_child(rv)
 		if sim.battle_at(region_idx).size() > 0:
 			_add_battle_bar()
 		else:

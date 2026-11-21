@@ -49,6 +49,7 @@ func _run_all() -> void:
 	_finished("test_borders_and_battles", test_borders_and_battles(b))
 	_finished("test_map_rules", test_map_rules(b))
 	_finished("test_ui_map_tap", test_ui_map_tap())
+	_finished("test_geography", test_geography(b))
 	_finished("test_raze", test_raze(b))
 	_finished("test_ui_attack_flow", test_ui_attack_flow())
 	_finished("test_conquer_whole_planet", test_conquer_whole_planet(b))
@@ -246,7 +247,7 @@ func _game() -> Node:
 	var g: Node = root.get_node("Game")
 	g.paused = true      # tests drive time themselves
 	g.persist = false    # and never touch the player's save
-	g.new_game(1)   # fixed map so tests repeat
+	g.new_game(1, false)   # fixed map, sheet layout, so tests repeat
 	return g
 
 
@@ -389,6 +390,76 @@ func test_map_rules(b) -> bool:
 	_check("map: a save brings its map back", loaded.map.cells == a.map.cells and loaded.map_seed == 77)
 	var cap_y: int = a.map.anchors[1].y
 	_check("map: the capital sits in the south", a.map.anchors.values().all(func(p): return p.y <= cap_y + 6))
+	return true
+
+
+func test_geography(b) -> bool:
+	var Factory := preload("res://scripts/sim/planet_factory.gd")
+	var biomes := {}
+	var water_ok := true
+	var capital_plains := true
+	var names_ok := true
+	var with_rivers := 0
+	var with_lakes := 0
+	var crossing_case := {}
+	for seed in range(1, 31):
+		var sim = Sim.new_home_planet(b, seed, true)
+		for r in sim.regions:
+			biomes[r.terrain] = true
+		capital_plains = capital_plains and sim.region(1).terrain == "Plains"
+		var names := {}
+		for r in sim.regions:
+			names[r.name] = true
+		names_ok = names_ok and names.size() == 12
+		for i in sim.map.cells.size():
+			if sim.map.water[i] != 0 and sim.map.cells[i] != 0:
+				water_ok = false
+		with_rivers += 1 if sim.map.rivers > 0 else 0
+		with_lakes += 1 if sim.map.lakes > 0 else 0
+		if crossing_case.is_empty():
+			for key in sim.map.river_share:
+				if sim.map.river_share[key] >= 0.5:
+					var pair: PackedStringArray = key.split(",")
+					crossing_case = {"seed": seed, "a": int(pair[0]), "b": int(pair[1])}
+					break
+	_check("geography: biomes include desert, tundra, mountains, coast and forest (%s)" % ", ".join(biomes.keys()),
+		["Desert", "Tundra", "Mountains", "Coast", "Forest"].all(func(x): return biomes.has(x)))
+	_check("geography: the capital is always Plains", capital_plains)
+	_check("geography: 12 different region names on every map", names_ok)
+	_check("geography: water never belongs to a region", water_ok)
+	_check("geography: most maps have rivers (%d/30) and lakes (%d/30)" % [with_rivers, with_lakes], with_rivers >= 25 and with_lakes >= 20)
+
+	# A river border: hold only one side, and the defender gets the bonus.
+	var sim = Sim.new_home_planet(b, crossing_case.seed, true)
+	var a: int = crossing_case.a
+	var t: int = crossing_case.b
+	for r in sim.regions:
+		r.owner = Sim.PLAYER if r.index == a else sim.region(r.index).civ if r.civ != Sim.PLAYER else "Kharn Clans"
+	_check_close("river: attacking across a river faces the bonus", sim.defense_mult(t), sim.region(t).defense_mod * (1.0 + b.num("river_crossing_defense")))
+	_check("river: the attack screen says so", sim.preview_attack(t, 10).river)
+	var dry: Array = sim.neighbours(t).filter(func(n): return n != a and sim.river_share(n, t) < 0.5)
+	if not dry.is_empty():
+		sim.region(dry[0]).owner = Sim.PLAYER
+		_check_close("river: a dry border in removes the bonus", sim.defense_mult(t), sim.region(t).defense_mod)
+	var sheet = Sim.new_home_planet(b, crossing_case.seed, false)
+	_check("river: the sheet layout ignores rivers", not sheet.river_crossing(t))
+
+	# Saves keep the geography.
+	var j := JSON.stringify(sim.to_dict(), "", true, true)
+	var c = Sim.new_home_planet(b, 1)
+	c.apply_dict(JSON.parse_string(j))
+	_check("geography: a save brings back the same biomes and names", c.geography and c.regions.map(func(r): return r.name + r.terrain) == sim.regions.map(func(r): return r.name + r.terrain))
+
+	# New games are balance-checked.
+	var t0 := Time.get_ticks_msec()
+	var all_in := true
+	var tries := 0
+	for seed in [101, 202, 303, 404, 505]:
+		var got := Factory.new_game(b, seed)
+		tries += got.tries
+		all_in = all_in and got.hours >= b.num("map_cautious_hours_min") and got.hours <= b.num("map_cautious_hours_max")
+	var ms := (Time.get_ticks_msec() - t0) / 5
+	_check("factory: new maps play within the balance window (%d tries for 5 maps, %d ms each)" % [tries, ms], all_in)
 	return true
 
 
@@ -540,6 +611,7 @@ func test_market(b) -> bool:
 
 func test_diplomacy(b) -> bool:
 	var sim = Sim.new_home_planet(b)
+	sim.npc_attacks_enabled = false   # a raid would move soldiers into garrisons mid-test
 	var keep: float = sim.sale_keep()
 	var talks: float = sim.relations_hours(5)
 	_check("diplomacy: trade rights are free", sim.sign_trade("Veyra Compact") and is_equal_approx(sim.res.gold, 0.0))
